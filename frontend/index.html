@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Free SEO and AI visibility audit for any website. See your scores, gaps, and step-by-step fix guides in under 60 seconds. No login, no signup, completely free.">
+  <title>GeoScore — Free SEO &amp; AI Visibility Audit Tool</title>
+  <link rel="canonical" href="https://geoscoreapp.pages.dev/">
+  <meta property="og:title" content="GeoScore — Free SEO &amp; AI Visibility Audit">
+  <meta property="og:description" content="Instant SEO &amp; AI answer engine audit for any website. Scores, gaps, and step-by-step fix guides. Free, no login, any domain.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://geoscoreapp.pages.dev/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="GeoScore — Free SEO &amp; AI Visibility Audit">
+  <meta name="twitter:description" content="Instant SEO &amp; AI answer engine audit for any website. Free, no login.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232563eb'/><path d='M8 22 L13 14 L18 18 L23 10' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round' fill='none'/><circle cx='23' cy='10' r='2.5' fill='%2334d399'/></svg>">
+  <!-- Inter font — primary typeface matching SEOptimer's professional aesthetic -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] }
+        }
+      }
+    }
+  </script>
+  <link rel="stylesheet" href="print.css" media="print">
+  <style>
+    /* ── Animations ─────────────────────────────────────────────── */
+    .spinner { animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .fade-in { animation: fadeIn 0.25s ease-out; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    /* ── SVG score ring animation ───────────────────────────────── */
+    .score-ring { transition: stroke-dashoffset 0.9s cubic-bezier(0.4, 0, 0.2, 1); }
+
+    /* ── Tabs ───────────────────────────────────────────────────── */
+    .hiw-tab.active { background: #2563eb; color: #fff; }
+    .hiw-tab:not(.active) { background: #f1f5f9; color: #475569; }
+    .hiw-panel { display: none; }
+    .hiw-panel.active { display: block; }
+    .cat-tab.active { background: #2563eb; color: #fff; box-shadow: 0 1px 4px rgba(37,99,235,0.25); }
+    .cat-tab:not(.active) { background: transparent; color: #64748b; }
+    .cat-tab:not(.active):hover { background: #f1f5f9; color: #334155; }
+
+    /* ── Tooltips ───────────────────────────────────────────────── */
+    .tech-tip {
+      text-decoration: underline dotted #94a3b8;
+      cursor: help;
+      position: relative;
+      text-underline-offset: 2px;
+    }
+    .tech-tip::after {
+      content: attr(title);
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: normal;
+      width: max-content;
+      max-width: 260px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.15s;
+      z-index: 50;
+      font-weight: 400;
+      font-style: normal;
+      text-decoration: none;
+    }
+    .tech-tip:hover::after { opacity: 1; }
+
+    /* ── Module cards ───────────────────────────────────────────── */
+    .module-card {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid #e2e8f0;
+      transition: box-shadow 0.15s;
+    }
+    .module-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+
+    /* ── Grade badge colours ─────────────────────────────────────── */
+    .grade-a  { background: #dcfce7; color: #15803d; }
+    .grade-b  { background: #dbeafe; color: #1d4ed8; }
+    .grade-c  { background: #fef9c3; color: #a16207; }
+    .grade-d  { background: #ffedd5; color: #c2410c; }
+    .grade-f  { background: #ffedd5; color: #c2410c; }
+
+    /* ── Priority badges ─────────────────────────────────────────── */
+    .badge-critical { background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; }
+    .badge-high     { background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; }
+    .badge-medium   { background: #fef9c3; color: #a16207; border: 1px solid #fef08a; }
+    .badge-low      { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+    .badge-pass     { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+
+    /* ── Score gauge glow ───────────────────────────────────────── */
+    .score-glow-green  { filter: drop-shadow(0 0 6px rgba(34,197,94,0.35)); }
+    .score-glow-yellow { filter: drop-shadow(0 0 6px rgba(234,179,8,0.35)); }
+    .score-glow-red    { filter: drop-shadow(0 0 6px rgba(249,115,22,0.3)); }
+
+    /* ── Hero gradient ──────────────────────────────────────────── */
+    .hero-gradient {
+      background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 60%, #f0fdf4 100%);
+    }
+
+    /* ── Monitor banner ─────────────────────────────────────────── */
+    #monitor-banner { transition: max-height 0.3s ease, opacity 0.3s ease; }
+
+    /* ── CWV pill colours ───────────────────────────────────────── */
+    .cwv-good   { background: #dcfce7; color: #15803d; }
+    .cwv-needs  { background: #fef9c3; color: #a16207; }
+    .cwv-poor   { background: #ffedd5; color: #c2410c; }
+
+    /* ── Collapsible card chevron ───────────────────────────────── */
+    .chevron { transition: transform 0.2s ease; }
+    .chevron.rotated { transform: rotate(180deg); }
+    .card-collapse-toggle { border-radius: 6px; padding: 3px 4px; margin: -3px -4px 0; transition: background 0.12s; }
+    .card-collapse-toggle:hover { background: #f1f5f9; }
+
+    /* ── Recommendation done state ──────────────────────────────── */
+    .rec-done { opacity: 0.45; }
+    .rec-done .rec-body { text-decoration: line-through; color: #94a3b8; }
+
+    /* ── Score reveal animation ─────────────────────────────────── */
+    @keyframes scoreReveal { from { opacity: 0; transform: scale(0.96) translateY(6px); } to { opacity: 1; transform: none; } }
+    .score-reveal { animation: scoreReveal 0.4s cubic-bezier(0.34, 1.56, 0.64, 1); }
+
+    /* ── Scroll-to-top button ───────────────────────────────────── */
+    #scroll-top { transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s; }
+    #scroll-top:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(37,99,235,0.18); }
+  </style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "GeoScore",
+    "description": "Free instant SEO and AI visibility audit for any website worldwide.",
+    "url": "https://geoscoreapp.pages.dev",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "Web",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "creator": { "@type": "Organization", "name": "GeoScore" }
+  }
+  </script>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800" style="font-family:'Inter',system-ui,sans-serif">
+
+<!-- ══════════════════════════════════════════════════════════════════
+     VERTICAL CORRECTION MODAL
+═══════════════════════════════════════════════════════════════════ -->
+<div id="vertical-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center" role="dialog" aria-modal="true">
+  <div class="bg-white rounded-xl p-6 w-80 shadow-2xl">
+    <h3 class="font-semibold text-slate-800 mb-3">Correct Business Type</h3>
+    <p class="text-sm text-slate-500 mb-4">We detected this as: <strong id="vm-current" class="text-slate-700"></strong></p>
+    <select id="vm-vertical" class="w-full border border-slate-200 rounded-lg p-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-400">
+      <option value="">Select correct type...</option>
+      <option value="tech">Tech / SaaS</option>
+      <option value="ecommerce">Ecommerce</option>
+      <option value="finance">Finance / Payments</option>
+      <option value="restaurant">Restaurant</option>
+      <option value="food_delivery">Food Delivery</option>
+      <option value="dental">Dental</option>
+      <option value="medical">Medical / Clinic</option>
+      <option value="legal">Legal / Law Firm</option>
+      <option value="fitness">Fitness / Gym</option>
+      <option value="hotel">Hotel / Accommodation</option>
+      <option value="real_estate">Real Estate</option>
+      <option value="general">General / Other</option>
+    </select>
+    <p id="vm-msg" class="text-xs mb-3 hidden"></p>
+    <div class="flex gap-2">
+      <button id="vm-submit" onclick="submitVerticalCorrection()" class="flex-1 bg-orange-500 hover:bg-orange-600 text-white rounded-lg py-2 text-sm font-medium transition-colors">Save &amp; Re-audit</button>
+      <button onclick="closeVerticalModal()" class="flex-1 border border-slate-200 hover:bg-slate-50 rounded-lg py-2 text-sm transition-colors">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     HOW IT WORKS MODAL
+═══════════════════════════════════════════════════════════════════ -->
+<div id="hiw-modal" class="fixed inset-0 z-50 hidden bg-black/60 backdrop-blur-sm overflow-y-auto" role="dialog" aria-modal="true">
+  <div class="min-h-full flex items-start justify-center p-4 py-8">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl">
+      <div class="flex items-center justify-between px-6 py-5 border-b border-slate-100">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">How GeoScore Works</h2>
+          <p class="text-xs text-slate-400 mt-0.5">Exact technical details — transparent, no marketing</p>
+        </div>
+        <button id="hiw-close" class="text-slate-400 hover:text-slate-700 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors text-lg" aria-label="Close">✕</button>
+      </div>
+      <div class="flex gap-1.5 flex-wrap px-6 pt-5 pb-1">
+        <button class="hiw-tab active text-xs px-3 py-1.5 rounded-lg font-medium transition-colors" data-tab="pipeline">Pipeline</button>
+        <button class="hiw-tab text-xs px-3 py-1.5 rounded-lg font-medium transition-colors" data-tab="modules">Modules</button>
+        <button class="hiw-tab text-xs px-3 py-1.5 rounded-lg font-medium transition-colors" data-tab="tools">Free APIs</button>
+        <button class="hiw-tab text-xs px-3 py-1.5 rounded-lg font-medium transition-colors" data-tab="stack">Stack</button>
+        <button class="hiw-tab text-xs px-3 py-1.5 rounded-lg font-medium transition-colors" data-tab="privacy">Privacy</button>
+      </div>
+      <div class="px-6 pb-6 pt-4 text-sm text-slate-700">
+        <div id="tab-pipeline" class="hiw-panel active space-y-2">
+          <p class="text-xs text-slate-400 mb-3">Execution sequence — from input to cached result:</p>
+          <div class="space-y-2">
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">1</span><div><div class="font-medium text-xs">Domain normalisation</div><div class="text-xs text-slate-500 mt-0.5">Protocol stripped, paths removed, lowercased.</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">2</span><div><div class="font-medium text-xs">KV cache lookup</div><div class="text-xs text-slate-500 mt-0.5">1-hour cache. Hit = instant result, no modules run.</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">3</span><div><div class="font-medium text-xs">Homepage pre-fetched once</div><div class="text-xs text-slate-500 mt-0.5">Shared across all modules — no module fetches the page independently, keeping well within Cloudflare's free-tier subrequest limit.</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-blue-50 rounded-xl border border-blue-100"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">4</span><div><div class="font-medium text-xs text-blue-800">15 modules run in parallel</div><div class="text-xs text-slate-500 mt-0.5">All modules fire via <code class="bg-blue-100 px-1 rounded">Promise.all()</code> in a Cloudflare Worker. Each streams via SSE as it completes.</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">5</span><div><div class="font-medium text-xs">Scoring</div><div class="text-xs text-slate-500 mt-0.5 font-mono">SEO = tech×40% + schema×30% + content×30%<br>GEO = authority×70% + citation×30%<br>Overall = SEO×55% + GEO×45%</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">6</span><div><div class="font-medium text-xs">Rule-based recommendations</div><div class="text-xs text-slate-500 mt-0.5">Sorted by impact/effort ratio. No AI — pure logic.</div></div></div>
+            <div class="flex gap-3 items-start p-3 bg-slate-50 rounded-xl"><span class="text-blue-600 font-bold text-xs w-5 shrink-0 mt-0.5">7</span><div><div class="font-medium text-xs">Persisted to D1 + KV</div><div class="text-xs text-slate-500 mt-0.5">Full JSON → Cloudflare D1. Audit ID → KV for cache.</div></div></div>
+          </div>
+        </div>
+        <div id="tab-modules" class="hiw-panel space-y-2">
+          <p class="text-xs text-slate-400 mb-3">Homepage fetched once and shared — modules stream results as they complete:</p>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">①</span> Technical SEO <span class="ml-auto text-slate-400 font-normal">~22s</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Fetches homepage, robots.txt, sitemap.xml, llms.txt in parallel. Checks HTTPS, TTFB, AI bot blocking (GPTBot, ClaudeBot, PerplexityBot), llms.txt, sitemap, noindex, lang, title length, meta description, viewport, canonical, OG tags, H1, hreflang, security headers (HSTS, CSP, X-Frame, etc.), tech stack fingerprinting.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">②</span> Schema Audit <span class="ml-auto text-slate-400 font-normal">~15s · no API</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Parses all JSON-LD blocks. Checks for LocalBusiness, Organization, Product, FAQPage, BreadcrumbList, Review, HowTo, Article. Validates field completeness. E-commerce specific: Product/Offer/Review schemas.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">③</span> Content Quality <span class="ml-auto text-slate-400 font-normal">~15s · no API</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Word count, H2/H3 headings, images + alt coverage, phone/email/address detection, Flesch-Kincaid readability score, reading time.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">④</span> Domain Authority <span class="ml-auto text-slate-400 font-normal">~25s · 4 free APIs</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Wayback Machine CDX (domain age), Wikipedia REST (brand article), Wikidata SPARQL (entity graph), DuckDuckGo Instant Answer (backlink sample).</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑤</span> GEO · AI Citation Prediction <span class="ml-auto text-slate-400 font-normal">~25s · Workers AI</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Detects vertical + location. Builds 3 AI search queries. Sends each to Meta Llama 3.1-8B to predict citation. Returns citation_rate 0–1 + confidence.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑥</span> On-Page SEO <span class="ml-auto text-slate-400 font-normal">~30s · no API</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Headings hierarchy, internal/external link ratios, image alt coverage, keyword density, canonical tags, structured data signals — all parsed directly from HTML.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑦</span> Off-Page SEO <span class="ml-auto text-slate-400 font-normal">~20s · 2 APIs</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>9 social platform profile checks, email security (MX/SPF/DMARC) via Cloudflare DoH.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑧</span> Site Intelligence <span class="ml-auto text-slate-400 font-normal">~25s · 2 APIs</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>3 DNS record types (A, MX, NS), IP geolocation (ipinfo.io), font detection, third-party script inventory (50+ domains).</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑨</span> SSL Certificate <span class="ml-auto text-slate-400 font-normal">~25s · crt.sh</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Queries crt.sh Certificate Transparency log. Finds most recent valid cert, returns issuer, validity dates, days remaining. Warns at &lt;30d and &lt;90d.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑩</span> Redirect Chain <span class="ml-auto text-slate-400 font-normal">~15s · no API</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Follows up to 3 redirect hops from http:// recording URL, status code, and timing per hop.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑪</span> Accessibility · WCAG <span class="ml-auto text-slate-400 font-normal">~30s · no API</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>8 WCAG 2.1 A/AA checks parsed directly from HTML — alt text, form labels, heading order, contrast signals, ARIA roles.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑫</span> Security Audit <span class="ml-auto text-slate-400 font-normal">~28s · Mozilla Observatory</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>HTTP header security tests with severity scoring. Mozilla Observatory grade (A–F) if available.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑬</span> Keyword Research <span class="ml-auto text-slate-400 font-normal">~20s · Autocomplete + AI</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Google Autocomplete seeds tailored to detected vertical + location. AI generates 8 high-intent keyword suggestions. Each keyword classified by intent (transactional, commercial, informational, local) and GEO potential.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑭</span> Domain Intelligence <span class="ml-auto text-slate-400 font-normal">~20s · 3 APIs</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>OpenPageRank domain score, DKIM record checks (Google, mail, selector1 selectors), DNSSEC status, registrar info from RDAP.</p></div></details>
+          <details class="border border-slate-200 rounded-xl overflow-hidden"><summary class="flex items-center gap-2 px-4 py-3 cursor-pointer bg-slate-50 hover:bg-slate-100 text-xs font-semibold"><span class="text-blue-600">⑮</span> CrUX · Real User Data <span class="ml-auto text-slate-400 font-normal">~15s · Google CrUX</span></summary><div class="px-4 py-3 text-xs text-slate-600 space-y-1 leading-relaxed"><p>Chrome User Experience Report — real-world LCP, CLS, FCP, INP, TTFB from actual Chrome users. Free API, no key required.</p></div></details>
+        </div>
+        <div id="tab-tools" class="hiw-panel space-y-2">
+          <p class="text-xs text-slate-400 mb-3">Every external API is free-forever with no key required:</p>
+          <div class="space-y-2">
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">🤖 Cloudflare Workers AI</div><div class="text-xs text-slate-500">Llama 3.1-8B. Free: 10,000 neurons/day.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">🔒 crt.sh Certificate Transparency</div><div class="text-xs text-slate-500 font-mono">crt.sh/?q={domain}&amp;output=json</div><div class="text-xs text-slate-500 mt-1">Free, no key. SSL cert details from CT logs.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">📖 Wikipedia + Wikidata REST</div><div class="text-xs text-slate-500">Brand article + entity graph. Free, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">🕰 Wayback Machine CDX</div><div class="text-xs text-slate-500">Domain age from earliest archived snapshot. Free, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">📡 ipinfo.io Geolocation</div><div class="text-xs text-slate-500">City, country, ASN. Free: 50k/month, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">🔎 Google Autocomplete</div><div class="text-xs text-slate-500">Keyword suggestions via suggestqueries.google.com. Free, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">🛡 Mozilla Observatory</div><div class="text-xs text-slate-500">HTTP security header grading (A–F). Free, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">📊 Google CrUX API</div><div class="text-xs text-slate-500">Real-user LCP, CLS, FCP, INP, TTFB. Free, no key.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="font-semibold text-xs mb-1">☁ Cloudflare DNS-over-HTTPS</div><div class="text-xs text-slate-500">A/MX/NS/TXT/DKIM lookups. Free, no key.</div></div>
+          </div>
+        </div>
+        <div id="tab-stack" class="hiw-panel space-y-2">
+          <p class="text-xs text-slate-400 mb-3">100% Cloudflare free tier:</p>
+          <div class="grid grid-cols-2 gap-2">
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">⚡ Workers</div><div class="text-xs text-slate-500">Edge runtime. Free: 100K req/day.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">🗃 D1 SQLite</div><div class="text-xs text-slate-500">Stores results + monitoring subs. Free: 5M rows.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">🔑 KV</div><div class="text-xs text-slate-500">Cache layer (1h TTL). Free: 100K reads/day.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">🤖 Workers AI</div><div class="text-xs text-slate-500">Llama inference. Free: 10K neurons/day.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">📄 Pages</div><div class="text-xs text-slate-500">Frontend hosting. Free: unlimited bandwidth.</div></div>
+            <div class="p-3 border border-slate-200 rounded-xl"><div class="text-xs font-semibold mb-1">📧 Resend</div><div class="text-xs text-slate-500">Email alerts. Free: 3K emails/month.</div></div>
+          </div>
+        </div>
+        <div id="tab-privacy" class="hiw-panel space-y-3 text-xs text-slate-600 leading-relaxed">
+          <div class="p-3 bg-green-50 border border-green-200 rounded-xl text-green-800 text-xs font-medium">No account. No cookies. No tracking. No ads.</div>
+          <ul class="space-y-2">
+            <li class="flex gap-2"><span class="text-slate-400 shrink-0">→</span><span><strong>Stored:</strong> Domain, full audit JSON, timestamp in Cloudflare D1 (EU region). Audited domains are non-confidential.</span></li>
+            <li class="flex gap-2"><span class="text-slate-400 shrink-0">→</span><span><strong>Cache:</strong> Results cached in KV for 1 hour.</span></li>
+            <li class="flex gap-2"><span class="text-slate-400 shrink-0">→</span><span><strong>Monitoring:</strong> Email stored only in D1, never sold. You can unsubscribe any time.</span></li>
+            <li class="flex gap-2"><span class="text-slate-400 shrink-0">→</span><span><strong>Rate limiting:</strong> 10 audits/hour per IP. Logs not retained beyond 24 hours.</span></li>
+            <li class="flex gap-2"><span class="text-slate-400 shrink-0">→</span><span><strong>AI models:</strong> Data stays within Cloudflare infrastructure. Never sent to OpenAI or Anthropic.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NAV
+═══════════════════════════════════════════════════════════════════ -->
+<nav class="bg-white border-b border-slate-100 sticky top-0 z-20 print:hidden">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+        <rect width="32" height="32" rx="8" fill="#2563eb"/>
+        <path d="M7 22L13 13L18 18L24 9" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="24" cy="9" r="2.5" fill="#34d399"/>
+      </svg>
+      <span class="text-lg font-bold text-slate-900 tracking-tight">GeoScore</span>
+      <span class="hidden sm:inline text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">Free</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="hiw-open-btn" onclick="document.getElementById('hiw-modal').classList.remove('hidden')"
+        class="hidden sm:flex text-xs text-slate-500 hover:text-blue-600 transition-colors items-center gap-1.5 font-medium px-2.5 py-1.5 rounded-lg hover:bg-blue-50">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 16v-4m0-4h.01"/></svg>
+        How it works
+      </button>
+      <button id="nav-fresh-btn" class="hidden text-xs text-orange-600 hover:text-orange-700 font-medium border border-orange-200 hover:border-orange-400 bg-orange-50 hover:bg-orange-100 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+        Start Fresh
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     MAIN
+═══════════════════════════════════════════════════════════════════ -->
+<div id="main-content" class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+
+  <!-- Hero ──────────────────────────────────────────────────────── -->
+  <div class="hero-gradient rounded-2xl p-8 sm:p-10 mb-8 text-center border border-blue-100/60 print:hidden">
+    <div class="inline-flex items-center gap-2 bg-blue-600/10 text-blue-700 text-xs font-semibold px-3 py-1 rounded-full mb-4 border border-blue-200/50">
+      <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+      100% free · no signup
+    </div>
+    <h1 class="text-3xl sm:text-4xl font-extrabold text-slate-900 leading-tight tracking-tight">
+      How visible is your website<br class="hidden sm:block">
+      <span class="text-blue-600">to Google &amp; AI search engines?</span>
+    </h1>
+    <p class="text-slate-500 mt-3 text-sm sm:text-base max-w-xl mx-auto leading-relaxed">
+      Instant SEO &amp; GEO audit — will ChatGPT, Perplexity &amp; Gemini cite you? Find out in seconds.
+    </p>
+    <p class="text-slate-400 mt-2 text-xs flex items-center justify-center gap-2 flex-wrap">
+      <span id="audits-count" class="font-medium text-slate-500"></span>
+      <span class="text-slate-300">·</span>
+      <span>Zero tracking</span>
+      <span class="text-slate-300">·</span>
+      <span>No account needed</span>
+      <span class="text-slate-300">·</span>
+      <span>Open-source stack</span>
+    </p>
+
+    <!-- Search box ──────────────────────────────────────────────── -->
+    <div class="mt-7 max-w-xl mx-auto">
+      <div class="relative">
+        <div class="absolute inset-y-0 left-4 flex items-center pointer-events-none">
+          <svg class="w-5 h-5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+          </svg>
+        </div>
+        <input id="search-input" type="text" autocomplete="off" spellcheck="false"
+          class="w-full pl-12 pr-32 py-4 rounded-2xl border-2 border-slate-200 focus:border-blue-500 shadow-sm text-base focus:outline-none bg-white transition-colors font-medium"
+          placeholder="stripe.com, bbc.co.uk, shopify.com…">
+        <button id="audit-btn"
+          class="absolute right-2 top-2 bottom-2 px-5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-xl transition-colors flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/></svg>
+          Audit
+        </button>
+        <ul id="suggestions" class="absolute z-10 w-full bg-white border border-slate-200 rounded-2xl shadow-xl mt-1.5 hidden overflow-hidden"></ul>
+      </div>
+      <div class="flex items-center justify-between mt-2.5 px-1">
+        <p class="text-xs text-slate-400">
+          Try:
+          <button class="underline hover:text-blue-600 transition-colors" data-quick="stripe.com">stripe.com</button>,
+          <button class="underline hover:text-blue-600 transition-colors" data-quick="booking.com">booking.com</button>,
+          <button class="underline hover:text-blue-600 transition-colors" data-quick="timeout.com">timeout.com</button>
+        </p>
+        <span id="semantic-badge" class="text-xs px-2 py-0.5 rounded"></span>
+      </div>
+      <!-- Recent audits — populated from localStorage -->
+      <div id="recent-audits-wrap" class="hidden mt-3"></div>
+    </div>
+  </div>
+
+  <!-- Audit Results ─────────────────────────────────────────────── -->
+  <div id="audit" class="hidden space-y-4">
+
+    <!-- Score Header Card ────────────────────────────────────────── -->
+    <div id="score-header" class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden print:shadow-none">
+      <!-- Top bar: domain + actions -->
+      <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+        <div id="business-card" class="flex items-center gap-3 min-w-0">
+          <div id="domain-favicon" class="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center shrink-0 overflow-hidden">
+            <svg class="w-4 h-4 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20"/></svg>
+          </div>
+          <div class="min-w-0">
+            <div class="font-bold text-slate-900 text-base truncate" id="domain-name">—</div>
+            <div class="text-xs text-slate-400" id="audit-date">Auditing…</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0 print:hidden">
+          <button id="reaudit-btn" class="text-xs border border-slate-200 hover:border-orange-300 hover:text-orange-600 px-3 py-1.5 rounded-lg transition-colors font-medium flex items-center gap-1.5 text-slate-600" title="Clear cache and run a fresh audit">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Re-audit
+          </button>
+          <button id="share-btn" class="text-xs border border-slate-200 hover:border-green-300 hover:text-green-600 px-3 py-1.5 rounded-lg transition-colors font-medium flex items-center gap-1.5 text-slate-600">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"/></svg>
+            Share
+          </button>
+          <button id="monitor-btn" class="text-xs border border-slate-200 hover:border-blue-300 hover:text-blue-600 px-3 py-1.5 rounded-lg transition-colors font-medium flex items-center gap-1.5 text-slate-600">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+            Monitor
+          </button>
+          <button id="export-btn" class="text-xs bg-slate-900 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg transition-colors font-medium flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Export PDF
+          </button>
+        </div>
+      </div>
+
+      <!-- Monitor email banner -->
+      <div id="monitor-banner" class="overflow-hidden" style="max-height:0;opacity:0">
+        <div class="px-5 py-3 bg-blue-50 border-b border-blue-100">
+          <p class="text-xs font-medium text-blue-800 mb-2">Get weekly score alerts — we'll email you if anything changes.</p>
+          <div class="flex gap-2">
+            <input id="monitor-email" type="email" placeholder="your@email.com"
+              class="flex-1 text-sm px-3 py-2 rounded-lg border border-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white">
+            <button id="monitor-submit" class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition-colors">Subscribe</button>
+          </div>
+          <p id="monitor-msg" class="text-xs mt-1.5 text-blue-600 hidden"></p>
+        </div>
+      </div>
+
+
+      <!-- Score gauges ─────────────────────────────────────────── -->
+      <div id="scores" class="hidden px-5 py-6">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <!-- Overall -->
+          <div class="flex flex-col items-center gap-2">
+            <div class="relative w-28 h-28">
+              <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="#e2e8f0" stroke-width="10" stroke-linecap="round"/>
+                <circle id="ring-overall" cx="60" cy="60" r="50" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="314.16" stroke-dashoffset="314.16" class="score-ring"/>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center rotate-0">
+                <span id="overall-score" class="text-2xl font-extrabold text-slate-900 leading-none">—</span>
+                <span class="text-[10px] text-slate-400 mt-0.5">/100</span>
+              </div>
+            </div>
+            <div class="text-center">
+              <div class="text-xs font-bold text-slate-700 uppercase tracking-wide">Overall</div>
+              <div id="overall-grade" class="mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block grade-b">—</div>
+              <div id="overall-context" class="text-[10px] text-slate-400 mt-1 leading-tight max-w-[90px]"></div>
+              <div id="overall-delta" class="text-[10px] font-semibold mt-0.5 hidden"></div>
+            </div>
+          </div>
+          <!-- SEO -->
+          <div class="flex flex-col items-center gap-2">
+            <div class="relative w-28 h-28">
+              <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="#e2e8f0" stroke-width="10" stroke-linecap="round"/>
+                <circle id="ring-seo" cx="60" cy="60" r="50" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="314.16" stroke-dashoffset="314.16" class="score-ring"/>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span id="seo-score" class="text-2xl font-extrabold text-blue-600 leading-none">—</span>
+                <span class="text-[10px] text-slate-400 mt-0.5">/100</span>
+              </div>
+            </div>
+            <div class="text-center">
+              <div class="text-xs font-bold text-slate-700 uppercase tracking-wide">SEO</div>
+              <div id="seo-grade" class="mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block grade-b">—</div>
+            </div>
+          </div>
+          <!-- GEO -->
+          <div class="flex flex-col items-center gap-2">
+            <div class="relative w-28 h-28">
+              <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="#e2e8f0" stroke-width="10" stroke-linecap="round"/>
+                <circle id="ring-geo" cx="60" cy="60" r="50" fill="none" stroke="#7c3aed" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="314.16" stroke-dashoffset="314.16" class="score-ring"/>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span id="geo-score" class="text-2xl font-extrabold text-purple-600 leading-none">—</span>
+                <span class="text-[10px] text-slate-400 mt-0.5">/100</span>
+              </div>
+            </div>
+            <div class="text-center">
+              <div class="text-xs font-bold text-slate-700 uppercase tracking-wide">GEO · AI</div>
+              <div class="text-[9px] text-slate-400 -mt-0.5">Authority + Citation</div>
+              <div id="geo-grade" class="mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block grade-b">—</div>
+            </div>
+          </div>
+          <!-- Performance (CWV) -->
+          <div id="perf-circle-wrap" class="flex flex-col items-center gap-2">
+            <div class="relative w-28 h-28">
+              <svg viewBox="0 0 120 120" class="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="#e2e8f0" stroke-width="10" stroke-linecap="round"/>
+                <circle id="ring-perf" cx="60" cy="60" r="50" fill="none" stroke="#16a34a" stroke-width="10" stroke-linecap="round"
+                  stroke-dasharray="314.16" stroke-dashoffset="314.16" class="score-ring"/>
+              </svg>
+              <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span id="perf-score" class="text-2xl font-extrabold text-green-600 leading-none">—</span>
+                <span id="perf-score-sub" class="text-[10px] text-slate-400 mt-0.5">/100</span>
+              </div>
+            </div>
+            <div class="text-center">
+              <div class="text-xs font-bold text-slate-700 uppercase tracking-wide">Performance</div>
+              <div id="perf-grade" class="mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block grade-b">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CWV pill row -->
+        <div id="cwv-row" class="hidden mt-5 pt-4 border-t border-slate-100 flex flex-wrap gap-2 justify-center"></div>
+
+        <!-- Pass/Fail summary bar -->
+        <div id="summary-bar" class="hidden mt-4 pt-4 border-t border-slate-100 flex items-center justify-center gap-6 text-xs flex-wrap"></div>
+
+      </div>
+
+      <!-- Progress bar -->
+      <div id="progress-bar" class="hidden px-5 pb-4">
+        <div class="flex items-center gap-3">
+          <div class="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+            <div id="progress-fill" class="bg-blue-500 h-2 rounded-full transition-all duration-500" style="width:0%"></div>
+          </div>
+          <span id="progress-label" class="text-xs text-slate-400 shrink-0 w-28 text-right">0 / 13 modules</span>
+          <span id="audit-timer" class="text-xs font-mono text-blue-500 shrink-0 w-8 text-right">0s</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Embed widget CTA (shown after audit) -->
+    <div id="embed-cta" class="hidden bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl px-5 py-3.5 flex items-center justify-between print:hidden">
+      <div class="text-white">
+        <div class="text-sm font-semibold">Add GeoScore to your website</div>
+        <div class="text-xs text-blue-100 mt-0.5">Embed a live audit badge for any domain — one line of code.</div>
+      </div>
+      <button id="show-embed-btn" class="shrink-0 bg-white text-blue-700 text-xs font-semibold px-4 py-2 rounded-lg hover:bg-blue-50 transition-colors">Get embed code</button>
+    </div>
+
+    <!-- Category Tabs -->
+    <div id="cat-tabs" class="hidden bg-white rounded-xl border border-slate-200 p-1.5 print:hidden">
+      <div class="flex gap-1 flex-wrap">
+        <button class="cat-tab active text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="all">All</button>
+        <button class="cat-tab text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="seo">SEO Foundation</button>
+        <button class="cat-tab text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="geo">GEO &amp; AI</button>
+        <button class="cat-tab text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="authority">Authority</button>
+        <button class="cat-tab text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="site_intel">Site Intel</button>
+        <button class="cat-tab text-xs px-3 py-2 rounded-lg font-medium transition-colors" data-cat="previews">Previews &amp; Tools</button>
+      </div>
+    </div>
+
+    <!-- Module Sections -->
+    <div id="modules" class="flex flex-col space-y-3"></div>
+
+  </div>
+</div>
+
+<!-- Sticky AI Chat Bar -->
+<div id="chat-section" class="hidden fixed bottom-0 left-0 right-0 z-30 px-4 pb-3 print:hidden">
+  <div class="max-w-2xl mx-auto">
+    <!-- Gradient border wrapper -->
+    <div class="rounded-2xl p-[2px] shadow-[0_-8px_40px_rgba(99,102,241,0.22)]" style="background:linear-gradient(135deg,#818cf8,#3b82f6,#a78bfa)">
+      <div class="bg-white rounded-[14px] px-3 pt-2 pb-2">
+
+        <!-- Messages -->
+        <div id="chat-messages" class="space-y-3 mb-2 overflow-y-auto transition-all" style="max-height:0;min-height:0"></div>
+
+        <!-- Suggestion chips — hidden once conversation starts -->
+        <div id="chat-suggestions" class="flex flex-wrap items-center gap-1.5 mb-2">
+          <span class="text-[10px] text-slate-400 shrink-0">Try:</span>
+          <button class="chat-suggestion text-[11px] border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-2.5 py-1 rounded-full transition-colors">What's my biggest issue?</button>
+          <button class="chat-suggestion text-[11px] border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-2.5 py-1 rounded-full transition-colors">Quick wins to improve score</button>
+          <button class="chat-suggestion text-[11px] border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-2.5 py-1 rounded-full transition-colors">How's my GEO visibility?</button>
+          <button class="chat-suggestion text-[11px] border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-2.5 py-1 rounded-full transition-colors">Is my schema complete?</button>
+        </div>
+
+        <!-- Input row -->
+        <div class="flex items-center gap-2">
+          <input id="chat-input" type="text"
+            class="flex-1 px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-slate-50 placeholder:text-slate-400"
+            placeholder="Ask anything about this audit…">
+          <button id="chat-send"
+            class="px-4 py-2 bg-gradient-to-r from-blue-600 to-violet-600 text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity shrink-0">
+            Ask ↑
+          </button>
+          <button id="chat-clear" class="hidden items-center gap-1 text-[11px] text-slate-400 hover:text-orange-500 hover:bg-orange-50 px-2 py-1.5 rounded-xl border border-slate-200 transition-colors shrink-0">
+            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Scroll-to-top -->
+<button id="scroll-top" class="fixed bottom-20 right-4 z-40 w-9 h-9 bg-white border border-slate-200 rounded-full shadow-md hidden items-center justify-center text-slate-400 hover:text-blue-600 hover:border-blue-300 print:hidden" aria-label="Back to top">
+  <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+</button>
+
+<script src="app.js"></script>
+<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "faab01a9e51d436c9d34f5902b5567e9"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>
