@@ -64,6 +64,8 @@ const MODULE_CATEGORY = {
 
 // Display order: GEO/AI visibility first → Authority → Content → Technical → Site details → Action
 const CARD_ORDER = {
+  // 0. Top action — always first
+  'priority-card':               5,
   // 1. GEO & AI visibility — the core value prop
   'module-geo_predicted':       10,
   'card-ai-business':           12,
@@ -973,6 +975,31 @@ function renderFullAudit(data) {
       if (perfWrap) perfWrap.style.display = 'none';
     }
 
+    // Score insight callout (plain-English summary below the gauges)
+    requestAnimationFrame(() => {
+      const insightEl = document.getElementById('score-insight');
+      const insightText = document.getElementById('score-insight-text');
+      const insightSub = document.getElementById('score-insight-sub');
+      if (insightEl && insightText && data.overall_score !== undefined) {
+        const _seo = data.seo_score ?? 0, _geo = data.geo_score ?? 0;
+        insightText.textContent = `${data.overall_score}/100 — ${scoreContext(data.overall_score)}.`;
+        let sub = '';
+        if (_seo > _geo + 15) {
+          sub = `Your traditional SEO is solid (${_seo}), but AI search visibility needs work (${_geo}). Focus on E-E-A-T signals and structured data.`;
+        } else if (_geo > _seo + 15) {
+          sub = `Great AI visibility signals (${_geo})! Shore up traditional SEO fundamentals (${_seo}) for balanced coverage.`;
+        } else if (data.overall_score >= 80) {
+          sub = `Strong across the board — fine-tune your weakest signals for the final push.`;
+        } else if (data.overall_score >= 60) {
+          sub = `Room to grow. The priority card below shows the single highest-impact fix.`;
+        } else {
+          sub = `Several key issues found. Work through the top recommendations to improve visibility.`;
+        }
+        insightSub.textContent = sub;
+        insightEl.classList.remove('hidden');
+      }
+    });
+
     // CWV pill row
     if (ps) {
       const cwvRow = document.getElementById('cwv-row');
@@ -1057,8 +1084,16 @@ function renderFullAudit(data) {
 function cwvPill(label, value, status) {
   const cls = { good: 'cwv-good', needs: 'cwv-needs', poor: 'cwv-poor' }[status] ?? 'cwv-needs';
   const icon = status === 'good' ? '✓' : status === 'poor' ? '✗' : '~';
+  const tips = {
+    LCP:  'Largest Contentful Paint — how long the biggest visible element takes to load. Good: ≤2.5s',
+    CLS:  'Cumulative Layout Shift — how much the page jumps around while loading. Good: ≤0.1',
+    FCP:  'First Contentful Paint — time until first content appears on screen. Good: ≤1.8s',
+    TTFB: 'Time to First Byte — how fast the server responds. Good: ≤0.8s',
+    TBT:  'Total Blocking Time — how long the browser is stuck before it can respond to input. Good: ≤200ms',
+  };
+  const tip = tips[label] ? ` class="tech-tip" title="${tips[label]}"` : '';
   return `<span class="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full ${cls}">
-    ${icon} <span class="font-bold">${label}</span> ${esc(value)}
+    ${icon} <span class="font-bold"${tip}>${label}</span> ${esc(value)}
   </span>`;
 }
 
@@ -1174,6 +1209,20 @@ function wireActionButtons(data) {
     });
   }
 
+  // Tweet / X share
+  const tweetBtn = document.getElementById('tweet-btn');
+  if (tweetBtn && !tweetBtn.dataset.wired) {
+    tweetBtn.dataset.wired = '1';
+    tweetBtn.addEventListener('click', () => {
+      const score = data.overall_score ?? '—';
+      const seo = data.seo_score ?? '—';
+      const geo = data.geo_score ?? '—';
+      const text = `My ${data.domain} scored ${score}/100 on GeoScore\n\n📊 SEO: ${seo} · AI Visibility: ${geo}\n\nCheck yours 👇`;
+      const url = `https://geoscoreapp.pages.dev/?d=${encodeURIComponent(data.domain)}`;
+      window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url)}`, '_blank', 'noopener');
+    });
+  }
+
   // Embed
   const showEmbedBtn = document.getElementById('show-embed-btn');
   if (showEmbedBtn && !showEmbedBtn.dataset.wired) {
@@ -1219,6 +1268,12 @@ function updateModuleProgress(name, status, detail) {
   // These modules are rendered by renderComputedSections, not as streaming cards.
   // Without this guard, they'd get a permanent spinner that never resolves.
   if (name === 'recommendations' || name === 'keywords' || name === 'competitor_snapshot') return;
+  // Update progress status text
+  const statusEl = document.getElementById('progress-status');
+  if (statusEl) {
+    const label = moduleName(name).replace(/^[^a-zA-Z]+/, '').trim();
+    statusEl.textContent = `Checking ${label}…`;
+  }
   if (document.getElementById(`module-${name}`)) return;
   const el = document.createElement('div');
   el.id = `module-${name}`;
@@ -1240,6 +1295,12 @@ function updateModuleProgress(name, status, detail) {
 
 function renderSection(d) {
   if (d.module === 'recommendations' || d.module === 'keywords' || d.module === 'competitor_snapshot') return;
+  // Update progress status to show completion
+  const statusEl = document.getElementById('progress-status');
+  if (statusEl && d.module !== 'bot_blocked') {
+    const label = moduleName(d.module).replace(/^[^a-zA-Z]+/, '').trim();
+    statusEl.textContent = `✓ ${label}`;
+  }
 
   // ── Bot-challenge / WAF interstitial warning banner ───────────────────────
   // When a site blocks automated fetches (CAPTCHA, Cloudflare challenge, etc.)
@@ -2195,6 +2256,33 @@ function wireCopyReport(data) {
   }, { once: true });
 }
 
+function renderPriorityCard(top) {
+  if (!top) return;
+  const existing = document.getElementById('priority-card');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.id = 'priority-card';
+  el.className = 'rounded-xl border-2 border-orange-300 bg-gradient-to-r from-orange-50 to-amber-50 p-5 fade-in';
+  el.style.order = cardOrder('priority-card');
+  el.dataset.category = 'all';
+  el.innerHTML = `
+    <div class="flex items-start gap-3">
+      <div class="text-2xl leading-none mt-0.5" aria-hidden="true">🎯</div>
+      <div class="min-w-0 flex-1">
+        <div class="text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-1">Your #1 Priority</div>
+        <div class="font-semibold text-slate-800">${esc(top.title)}</div>
+        <div class="text-xs text-slate-500 mt-1 leading-relaxed">${esc(top.why)}</div>
+        <div class="flex items-center gap-2 mt-2 flex-wrap">
+          <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold border border-orange-200">Impact ${top.impact}/5</span>
+          <span class="text-xs text-slate-400">${effortTime(top.effort)}</span>
+          <button class="text-xs text-orange-600 hover:text-orange-800 underline ml-auto transition-colors" data-action="toggle-fix" data-rec-index="0">How to fix ▾</button>
+        </div>
+        <div class="hidden mt-3 what-to-do"></div>
+      </div>
+    </div>`;
+  document.getElementById('modules').appendChild(el);
+}
+
 function renderRecommendations(recs) {
   if (!recs?.length) return;
   const existing = document.getElementById('recs-section');
@@ -2203,6 +2291,7 @@ function renderRecommendations(recs) {
   recMap.clear();
   const slice = recs.slice(0, 8);
   slice.forEach((r, i) => recMap.set(i, r));
+  renderPriorityCard(slice[0]);
 
   const el = document.createElement('div');
   el.id = 'recs-section';
@@ -2356,10 +2445,30 @@ function appendError(msg, temporary = false) {
 // ── Chat ────────────────────────────────────────────────────────────────────
 
 function enableChat() {
-  document.getElementById('chat-section').classList.remove('hidden');
+  const bubble = document.getElementById('chat-bubble');
+  if (bubble) bubble.classList.replace('hidden', 'flex');
   const main = document.getElementById('main-content');
-  if (main) main.style.paddingBottom = '152px';
+  if (main) main.style.paddingBottom = '76px';
 }
+
+function openChat() {
+  document.getElementById('chat-bubble')?.classList.replace('flex', 'hidden');
+  document.getElementById('chat-section')?.classList.remove('hidden');
+  const main = document.getElementById('main-content');
+  if (main) main.style.paddingBottom = '180px';
+  document.getElementById('chat-input')?.focus();
+}
+
+function minimizeChat() {
+  document.getElementById('chat-section')?.classList.add('hidden');
+  const bubble = document.getElementById('chat-bubble');
+  if (bubble) bubble.classList.replace('hidden', 'flex');
+  const main = document.getElementById('main-content');
+  if (main) main.style.paddingBottom = '76px';
+}
+
+document.getElementById('chat-bubble')?.addEventListener('click', openChat);
+document.getElementById('chat-minimize')?.addEventListener('click', minimizeChat);
 
 function clearChat() {
   const msgs = document.getElementById('chat-messages');
