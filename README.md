@@ -1,8 +1,15 @@
 # GeoScore — SEO & AI Visibility Audit Tool
 
+<p align="center">
+  <a href="https://geoscoreapp.pages.dev">
+    <img src="https://geoscoreapp.pages.dev/og-image.svg" alt="GeoScore — Free SEO & AI Visibility Audit" width="100%"/>
+  </a>
+</p>
+
 A free, open-source SEO and AI-visibility audit tool that analyses any website in under 60 seconds. Built entirely on **Cloudflare's free tier** (Workers, Pages, D1, KV, Vectorize, Workers AI).
 
-**Live demo → [geoscoreapp.pages.dev](https://geoscoreapp.pages.dev)**
+**Live demo → [geoscoreapp.pages.dev](https://geoscoreapp.pages.dev)**  
+**Example → [stripe.com audit](https://geoscoreapp.pages.dev/?d=stripe.com)**
 
 ---
 
