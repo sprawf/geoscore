@@ -3333,7 +3333,9 @@ function renderComputedSections(data) {
 
     const sslCA = (() => {
       const issuer = sslData?.issuer ?? '';
-      if (!issuer) return null;
+      // Skip placeholder strings that don't represent real CA names
+      const _PLACEHOLDERS = new Set(['Unknown', 'Unverified', 'Verified (details unavailable)', '']);
+      if (!issuer || _PLACEHOLDERS.has(issuer)) return null;
       if (/digicert/i.test(issuer)) return 'DigiCert';
       if (/letsencrypt|let's encrypt/i.test(issuer)) return "Let's Encrypt";
       if (/comodo|sectigo/i.test(issuer)) return 'Sectigo';
