@@ -1927,7 +1927,12 @@ function renderSection(d) {
             </div>
             ${badge}
           </div>
-          ${q.reasoning ? `<div class="text-xs text-slate-500 leading-relaxed ml-6">${esc(q.reasoning)}</div>` : ''}
+          ${q.reasoning ? (() => {
+            const isHeuristic = q.reasoning.startsWith('AI unavailable');
+            return isHeuristic
+              ? `<div class="text-xs text-slate-400 leading-relaxed ml-6 italic" title="Llama 3.1 was temporarily unavailable — this score is estimated from keyword matching and structured data signals, not live AI inference">⚠ ${esc(q.reasoning)}</div>`
+              : `<div class="text-xs text-slate-500 leading-relaxed ml-6">${esc(q.reasoning)}</div>`;
+          })() : ''}
         </div>`;
     }).join('');
 

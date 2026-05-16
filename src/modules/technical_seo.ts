@@ -271,7 +271,7 @@ function detectTechStack(html: string, headers: Headers): TechStack {
     backend_language = 'Node.js (Express)';
   } else if (server.includes('python') || lower.includes('django') || lower.includes('flask')) {
     backend_language = 'Python';
-  } else if (server.includes('ruby') || lower.includes('rails') || lower.includes('rack')) {
+  } else if (server.includes('ruby') || /\bruby on rails\b|rails\/([\d.]+)|rack\/[\d.]+\s+\(ruby\)/i.test(lower)) {
     backend_language = 'Ruby';
   } else if (lower.includes('laravel') || lower.includes('symfony') || lower.includes('wp-content')) {
     backend_language = 'PHP';
@@ -281,7 +281,14 @@ function detectTechStack(html: string, headers: Headers): TechStack {
 
   // ── Site platform ─────────────────────────────────────────────────────────
   let cms: string | null = null;
-  if (lower.includes('wp-content') || lower.includes('wp-json') || lower.includes('/wp-includes')) {
+  // AI website builders — detect before generic CMS checks (their footprint is in asset URLs/meta)
+  if (lower.includes('lovable.app') || /lovable\.dev/i.test(lower)) {
+    cms = 'Lovable';
+  } else if (/stackblitz\.io|bolt\.new/i.test(lower)) {
+    cms = 'Bolt';
+  } else if (/v0\.dev/i.test(lower)) {
+    cms = 'v0 (Vercel)';
+  } else if (lower.includes('wp-content') || lower.includes('wp-json') || lower.includes('/wp-includes')) {
     cms = 'WordPress';
     if (wpVer) versions['WordPress'] = wpVer;
     if (!backend_language) backend_language = 'PHP';
@@ -322,7 +329,9 @@ function detectTechStack(html: string, headers: Headers): TechStack {
   else if (lower.includes('.myshopify.com') || lower.includes('shopify.com/s/files')) ecommerce = 'Shopify';
   else if (lower.includes('magento') || lower.includes('mage/cookies')) ecommerce = 'Magento';
   else if (lower.includes('prestashop')) ecommerce = 'PrestaShop';
-  else if (lower.includes('bigcommerce')) ecommerce = 'BigCommerce';
+  // BigCommerce: require actual BC infrastructure URLs — the word "bigcommerce" appears on
+  // competitor comparison pages (Shopify, WooCommerce, etc.) and triggers false positives.
+  else if (/cdn\d+\.bigcommerce\.com|bc\.bigcommerce\.com|bigcommerce-assets\.com|\/bc-sf-filter\//i.test(lower)) ecommerce = 'BigCommerce';
   else if (lower.includes('wix.com') && lower.includes('wixstores')) ecommerce = 'Wix Stores';
   else if (lower.includes('ecwid')) ecommerce = 'Ecwid';
   else if (lower.includes('snipcart')) ecommerce = 'Snipcart';
@@ -478,7 +487,12 @@ function detectTechStack(html: string, headers: Headers): TechStack {
 
   // ── Business tools ────────────────────────────────────────────────────────
   const payments: string[] = [];
-  if (lower.includes('js.stripe.com') || lower.includes('stripe.com')) payments.push('Stripe');
+  // Only trigger on actual Stripe JS SDK load or Stripe-specific element attributes.
+  // Avoid false positives from pages that merely mention "stripe.com" in text
+  // (e.g. try-example chips like data-quick="stripe.com").
+  if (lower.includes('js.stripe.com') ||
+      (lower.includes('stripe.com') && /data-stripe|stripe-checkout|stripe-element|stripe-button/.test(lower)))
+    payments.push('Stripe');
   if (lower.includes('paypal.com') || lower.includes('paypalobjects')) payments.push('PayPal');
   if (lower.includes('braintreegateway.com') || lower.includes('braintree')) payments.push('Braintree');
   if (lower.includes('square.com') || lower.includes('squareup.com')) payments.push('Square');
@@ -568,13 +582,15 @@ function extractTagText(html: string, tag: string): string[] {
 
 function auditImages(html: string): ImageAudit {
   const imgRe = /<img(\s[^>]*)?\/?>/gi;
-  let m, total = 0, modern_count = 0;
+  let m, total = 0, missing_alt = 0, modern_count = 0;
   const missing_alt_srcs: string[] = [];
   while ((m = imgRe.exec(html)) !== null) {
     total++;
     const attrs = m[1] ?? '';
     const altMatch = /\balt\s*=\s*["']([^"']*)["']/i.exec(attrs);
-    if (!altMatch || altMatch[1].trim() === '') {
+    // Require 2+ non-whitespace chars — aligns with content_quality threshold
+    if (!altMatch || altMatch[1].trim().length < 2) {
+      missing_alt++;
       if (missing_alt_srcs.length < 20) {
         const src = (/\bsrc\s*=\s*["']([^"']{1,120})["']/i.exec(attrs) ?? [])[1] ?? '';
         if (src) missing_alt_srcs.push(src);
@@ -583,7 +599,7 @@ function auditImages(html: string): ImageAudit {
     const src = (/\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs) ?? [])[1] ?? '';
     if (/\.(webp|avif)(\?|$)/i.test(src)) modern_count++;
   }
-  return { total, missing_alt: missing_alt_srcs.length, missing_alt_srcs, modern_count };
+  return { total, missing_alt, missing_alt_srcs, modern_count };
 }
 
 function countUnsafeCrossOriginLinks(html: string): number {
@@ -715,11 +731,26 @@ export async function runTechnicalSeo(
   if (!llms_txt_present) issues.push('No llms.txt — AI engines cannot discover content index');
 
   // Sitemap — handle both direct sitemaps (<url>) and sitemap indexes (<sitemap>)
-  const sitemapContent = sitemapText.status === 'fulfilled' ? sitemapText.value : '';
-  const directUrls   = (sitemapContent.match(/<url>/g)     ?? []).length;
-  const indexEntries = (sitemapContent.match(/<sitemap>/g) ?? []).length;
-  // Sitemap index: each <sitemap> entry represents a sub-sitemap with many URLs
+  let sitemapContent = sitemapText.status === 'fulfilled' ? sitemapText.value : '';
+  let directUrls   = (sitemapContent.match(/<url>/g)     ?? []).length;
+  let indexEntries = (sitemapContent.match(/<sitemap>/g) ?? []).length;
   sitemap_url_count = directUrls > 0 ? directUrls : indexEntries;
+
+  // Fallback: if /sitemap.xml not found, check robots.txt Sitemap: directive
+  if (sitemap_url_count === 0 && robotsContent) {
+    const altSitemapUrl = (robotsContent.match(/^Sitemap:\s*(\S+)/im) ?? [])[1]?.trim();
+    if (altSitemapUrl) {
+      try {
+        const altContent = await fetchText(altSitemapUrl, 8000);
+        directUrls   = (altContent.match(/<url>/g)     ?? []).length;
+        indexEntries = (altContent.match(/<sitemap>/g) ?? []).length;
+        sitemap_url_count = directUrls > 0 ? directUrls : indexEntries;
+        if (sitemap_url_count > 0) sitemapContent = altContent;
+      } catch { /* ignore — sitemap URL in robots.txt may be unreachable */ }
+    }
+  }
+
+  // Sitemap index: each <sitemap> entry represents a sub-sitemap with many URLs
   const sitemapDetail = directUrls > 0 ? `${directUrls} URLs`
     : indexEntries > 0 ? `sitemap index (${indexEntries} sub-sitemaps)` : '0 URLs';
   checks.push({ name: 'Sitemap present', passed: sitemap_url_count > 0, detail: sitemapDetail });
@@ -748,16 +779,7 @@ export async function runTechnicalSeo(
     const html = sharedHtml;
 
     security_headers = detectSecurityHeaders(sharedHeaders);
-    if (security_headers.score < 50) {
-      issues.push(`Security headers score ${security_headers.score}/100 — missing: ${[
-        !security_headers.hsts && 'HSTS',
-        !security_headers.xframe && 'X-Frame-Options',
-        !security_headers.xcontent && 'X-Content-Type-Options',
-        !security_headers.csp && 'CSP',
-        !security_headers.referrer && 'Referrer-Policy',
-        !security_headers.permissions && 'Permissions-Policy',
-      ].filter(Boolean).join(', ')}`);
-    }
+    // Security header details are reported by the dedicated security_audit module — no duplicate here.
 
     const contentLength = sharedHeaders.get('content-length');
     page_weight_kb = contentLength
@@ -860,13 +882,27 @@ export async function runTechnicalSeo(
     const cmpCompressed = clHeader ? Math.round(parseInt(clHeader, 10) / 1024) : null;
     const cmpSavings = (cmpCompressed !== null && cmpRaw > 0 && cmpCompressed < cmpRaw)
       ? Math.round((1 - cmpCompressed / cmpRaw) * 100) : null;
-    compression = { enabled: !!(enc && /gzip|br|zstd/.test(enc)), encoding: enc, raw_kb: cmpRaw, compressed_kb: cmpCompressed, savings_pct: cmpSavings };
-    checks.push({ name: 'HTML compression (GZIP/Brotli)', passed: compression.enabled, detail: compression.enabled ? `${enc} — ${cmpSavings ?? '?'}% savings` : 'No compression detected' });
-    if (!compression.enabled) issues.push('No HTML compression — enable GZIP or Brotli to reduce transfer size');
+    const isEncoded = !!(enc && /gzip|br|zstd/.test(enc));
+    // Major CDNs (Cloudflare, CloudFront, Fastly, Akamai, Vercel, Netlify, BunnyCDN) compress
+    // responses for real browsers but NOT for server-side fetches that omit Accept-Encoding.
+    // Our Worker fetch has no Accept-Encoding, so we never see Content-Encoding from CDN edges.
+    // Treat CDN-fronted sites as having compression handled at the edge rather than flagging them.
+    const CDN_COMPRESSORS = new Set(['Cloudflare', 'Amazon CloudFront', 'Fastly', 'Akamai', 'Vercel Edge Network', 'Netlify Edge', 'BunnyCDN']);
+    const cdnManaged = !isEncoded && CDN_COMPRESSORS.has(tech_stack.cdn ?? '');
+    const varySupports = !isEncoded && !cdnManaged && (sharedHeaders.get('vary') ?? '').toLowerCase().includes('accept-encoding');
+    const compressionOk = isEncoded || cdnManaged || varySupports;
+    const compressionEncoding = isEncoded ? enc : (compressionOk ? 'CDN-managed' : null);
+    compression = { enabled: compressionOk, encoding: compressionEncoding, raw_kb: cmpRaw, compressed_kb: cmpCompressed, savings_pct: cmpSavings };
+    const compressionDetail = isEncoded ? `${enc} — ${cmpSavings ?? '?'}% savings`
+      : cdnManaged ? `CDN-managed (${tech_stack.cdn} compresses at edge)`
+      : varySupports ? 'Vary: Accept-Encoding present — server supports compression'
+      : 'No compression detected';
+    checks.push({ name: 'HTML compression (GZIP/Brotli)', passed: compressionOk, detail: compressionDetail });
+    if (!compressionOk) issues.push('No HTML compression — enable GZIP or Brotli to reduce transfer size');
 
     image_audit = auditImages(html);
     checks.push({ name: 'Image alt attributes', passed: image_audit.missing_alt === 0, detail: `${image_audit.total - image_audit.missing_alt}/${image_audit.total} images have alt text` });
-    if (image_audit.missing_alt > 0) issues.push(`${image_audit.missing_alt} image${image_audit.missing_alt > 1 ? 's' : ''} missing alt — accessibility & SEO impact`);
+    // Alt text issues are reported by accessibility module (WCAG 1.1.1) — no duplicate here.
 
     // Detect media queries in inline <style> blocks; also accept viewport meta as proxy
     // (modern sites load CSS externally so @media won't appear in raw HTML)
