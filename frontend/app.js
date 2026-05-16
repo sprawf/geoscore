@@ -1769,7 +1769,7 @@ function renderSection(d) {
         </div>
         <div class="grid grid-cols-3 gap-x-4 gap-y-1.5">${secHeaderItems}</div>
       </div>
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'schema_audit' && data) {
@@ -1804,7 +1804,7 @@ function renderSection(d) {
       ${missing.length ? `<div>
         <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Missing opportunities</div>
         <div class="flex flex-wrap gap-1.5">${missing.map(s => `<span class="bg-orange-50 text-orange-600 border border-orange-200 text-xs px-2.5 py-1 rounded-full">✗ ${esc(s)}</span>`).join('')}</div>
-      </div>` : (present.length > 0 || foundCount > 0) ? '<div class="text-sm text-green-600 font-medium">✓ All recommended schemas present</div>' : '<div class="text-sm text-slate-400">No structured data detected — consider adding JSON-LD schema markup</div>'}
+      </div>` : (present.length > 0 || foundCount > 0) ? '<div class="text-sm text-green-600 font-medium">✓ All recommended schemas present</div>' : `<div class="text-sm text-orange-600 font-medium">✗ No structured data found</div><div class="text-xs text-slate-500 mt-1">Add <span class="font-mono">WebSite</span>, <span class="font-mono">Organization</span>, and page-specific schemas (Article, Product, FAQPage) in a <span class="font-mono">&lt;script type="application/ld+json"&gt;</span> block. AI engines rely on structured data to extract and cite factual information.</div>`}
       ${data.schemas_found?.length ? `<div class="text-sm text-slate-500">Schema types detected: ${data.schemas_found.map(s => `<span class="font-medium text-slate-700">${esc(s)}</span>`).join(', ')}</div>` : ''}
       ${ecomSection}
     </div>`;
@@ -1850,7 +1850,7 @@ function renderSection(d) {
         ${data.has_email ? '<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✉ Email present</span>' : ''}
         ${data.language ? `<span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full">🌐 ${esc(data.language)}</span>` : ''}
       </div>
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'authority' && data) {
@@ -1985,11 +1985,14 @@ function renderSection(d) {
         </div>
       </div>
 
-      <!-- Query cards -->
-      ${queryCards ? `
+      <!-- Query cards: only show when confidence is meaningful (≥25%) -->
+      ${queryCards && confPct >= 25 ? `
         <div>
           <div class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Simulated AI search queries</div>
           <div class="space-y-2">${queryCards}</div>
+        </div>` : queryCards && confPct < 25 ? `
+        <div class="text-xs text-slate-400 italic bg-slate-50 rounded-lg px-3 py-2 border border-slate-100">
+          AI confidence too low (${confPct}%) for reliable query-level predictions. Build domain authority, add structured data, and deepen your content to improve this score.
         </div>` : ''}
 
     </div>`;
@@ -2018,7 +2021,7 @@ function renderSection(d) {
           <div class="text-xs text-slate-400 mb-1">Accessibility</div>
           <div class="text-base font-bold ${ps.accessibility >= 90 ? 'text-green-700' : ps.accessibility >= 70 ? 'text-yellow-700' : 'text-orange-600'}">${ps.accessibility}/100</div>
         </div>
-      </div>` : '<div class="text-sm text-slate-400 italic">PageSpeed data unavailable</div>'}
+      </div>` : ''}
       <div class="flex flex-wrap gap-2 text-sm text-slate-600">
         ${headings.h1 != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">H1: <strong>${headings.h1}</strong></span>` : ''}
         ${headings.h2 != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">H2: <strong>${headings.h2}</strong></span>` : ''}
@@ -2033,7 +2036,7 @@ function renderSection(d) {
       </div>
       ${cwv ? `<div class="flex flex-wrap gap-2">${cwv}</div>` : ''}
       ${ps?.opportunities?.length ? `<div class="text-sm text-slate-500">⚡ ${ps.opportunities.slice(0, 2).map(esc).join(' · ')}</div>` : ''}
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'off_page_seo' && data) {
@@ -2047,10 +2050,10 @@ function renderSection(d) {
       `<a href="${esc(s.url)}" target="_blank" rel="noopener" class="text-xs border border-slate-200 px-2.5 py-1 rounded-full hover:bg-slate-50 transition-colors font-medium">${esc(s.platform)} <span class="text-slate-400 font-normal">${esc(s.handle)}</span></a>`
     ).join('');
     detail = `<div class="mt-3 space-y-3">
-      <div>
+      ${socialBadges ? `<div>
         <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Social profiles</div>
-        <div class="flex flex-wrap gap-1.5">${socialBadges || '<span class="text-sm text-slate-400">No social profiles found on homepage</span>'}</div>
-      </div>
+        <div class="flex flex-wrap gap-1.5">${socialBadges}</div>
+      </div>` : ''}
       <div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
         <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Email infrastructure</div>
         <div class="grid grid-cols-3 gap-2 text-center">
@@ -2063,7 +2066,7 @@ function renderSection(d) {
             <div class="text-xs text-slate-400 mt-0.5">SPF</div>
           </div>
           <div class="bg-white rounded-lg p-2 border border-slate-100">
-            <div class="text-sm font-bold ${em.has_dmarc ? (em.dmarc_policy === 'reject' ? 'text-green-600' : 'text-yellow-600') : 'text-orange-500'}">${em.has_dmarc ? (em.dmarc_policy ?? '?') : '✗'}</div>
+            <div class="text-sm font-bold ${em.has_dmarc ? (em.dmarc_policy === 'reject' ? 'text-green-600' : em.dmarc_policy === 'quarantine' ? 'text-yellow-600' : em.dmarc_policy === 'none' ? 'text-amber-600' : 'text-slate-500') : 'text-orange-500'}">${em.has_dmarc ? (em.dmarc_policy ? esc(em.dmarc_policy) : 'present') : '✗'}</div>
             <div class="text-xs text-slate-400 mt-0.5">DMARC</div>
           </div>
         </div>
@@ -2072,7 +2075,7 @@ function renderSection(d) {
         <span class="${brand.has_knowledge_panel ? 'text-green-600' : 'text-slate-400'}">${brand.has_knowledge_panel ? '✓ Google Knowledge Panel found' : '✗ No Google Knowledge Panel'}</span>
       </div>` : ''}
       ${brand.ddg_abstract ? `<div class="text-sm text-slate-500 italic border-l-2 border-blue-200 pl-3">${esc(brand.ddg_abstract.slice(0, 220))}${brand.ddg_abstract.length > 220 ? '…' : ''}</div>` : ''}
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'site_intel' && data) {
@@ -2087,28 +2090,30 @@ function renderSection(d) {
       `<span class="text-xs bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full border border-slate-200">${esc(cat)} (${Array.isArray(domains) ? domains.length : 0})</span>`
     ).join('');
 
-    detail = `<div class="mt-3 space-y-3">
-      <div class="grid grid-cols-2 gap-2">
-        <div class="bg-slate-50 rounded-lg p-3">
+    const hostingProvider = hosting?.org_label || hosting?.org;
+    const hostingLocation = hosting ? [hosting.city, hosting.country].filter(Boolean).join(', ') : '';
+    const hostingCell = hostingProvider ? `<div class="bg-slate-50 rounded-lg p-3">
           <div class="text-xs text-slate-400 mb-1">Hosting provider</div>
-          <div class="text-sm font-semibold text-slate-700">${hosting?.org_label ? esc(hosting.org_label) : hosting?.org ? esc(hosting.org) : '—'}</div>
-        </div>
-        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-sm font-semibold text-slate-700">${esc(hostingProvider)}</div>
+        </div>` : '';
+    const locationCell = hostingLocation ? `<div class="bg-slate-50 rounded-lg p-3">
           <div class="text-xs text-slate-400 mb-1">Server location</div>
-          <div class="text-sm font-semibold text-slate-700">${hosting ? [hosting.city, hosting.country].filter(Boolean).map(esc).join(', ') : '—'}</div>
-        </div>
-      </div>
+          <div class="text-sm font-semibold text-slate-700">${esc(hostingLocation)}</div>
+        </div>` : '';
+    const hostingGrid = (hostingCell || locationCell) ? `<div class="grid grid-cols-2 gap-2">${hostingCell}${locationCell}</div>` : '';
+    detail = `<div class="mt-3 space-y-3">
+      ${hostingGrid}
       <div class="flex flex-wrap gap-2 text-sm text-slate-600">
         ${data.ip ? `<span class="font-mono bg-slate-100 border border-slate-200 px-2.5 py-1 rounded-lg text-xs">${esc(data.ip)}</span>` : ''}
         <span class="${dns.has_ipv6 ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-50 text-slate-400 border-slate-200'} border text-xs px-2.5 py-1 rounded-full">IPv6 ${dns.has_ipv6 ? '✓' : '✗'}</span>
         ${(dns.ns ?? []).length ? `<span class="text-xs text-slate-500 border border-slate-200 px-2.5 py-1 rounded-full">NS: ${(dns.ns ?? []).slice(0,2).map(esc).join(', ')}</span>` : ''}
         ${hosting?.timezone ? `<span class="text-xs text-slate-400 border border-slate-200 px-2.5 py-1 rounded-full">${esc(hosting.timezone)}</span>` : ''}
       </div>
-      ${tp.total_third_party_domains > 0 ? `<div>
+      ${tp.total_third_party_domains > 0 && tpCats ? `<div>
         <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Third-party services (${tp.total_third_party_domains} domains)</div>
         <div class="flex flex-wrap gap-1.5">${tpCats}</div>
       </div>` : ''}
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'redirect_chain' && data) {
@@ -2134,7 +2139,7 @@ function renderSection(d) {
         ${data.has_www_change ? '<span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full">www normalisation</span>' : ''}
       </div>
       ${hops.length ? `<div class="space-y-0">${hopChain}</div>` : ''}
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'accessibility' && data) {
@@ -2153,7 +2158,7 @@ function renderSection(d) {
     const checkList = checks.slice(0, 8).map(c =>
       `<div class="flex items-start gap-2 text-sm py-1 border-t border-slate-100 first:border-t-0">
         <span class="${c.passed ? 'text-green-600' : 'text-orange-500'} shrink-0 font-semibold mt-0.5">${c.passed ? '✓' : '✗'}</span>
-        <span class="${c.passed ? 'text-slate-500' : 'text-slate-700'} flex-1">${esc(c.rule)}${c.detail ? ` — <span class="text-blue-600">${esc(c.detail)}</span>` : ''}</span>
+        <span class="${c.passed ? 'text-slate-500' : 'text-slate-700'} flex-1">${esc(c.rule)}${c.detail && c.detail !== '(no detail)' ? ` — <span class="text-blue-600">${esc(c.detail)}</span>` : ''}</span>
         <span class="text-xs text-slate-300 shrink-0">${c.level}</span>
       </div>`
     ).join('');
@@ -2182,7 +2187,7 @@ function renderSection(d) {
       </div>
       ${dCwvChips ? `<div class="flex flex-wrap gap-2">${dCwvChips}</div>` : ''}
       <div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">${checkList}</div>
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'security_audit' && data) {
@@ -2323,7 +2328,29 @@ function renderSection(d) {
     const daysBarPct = daysKnown ? Math.min(100, Math.round(daysLeft / 365 * 100)) : 0;
     const daysBar = !isValid ? 'bg-orange-400' : daysLeft <= 30 ? 'bg-orange-400' : daysLeft <= 90 ? 'bg-yellow-400' : 'bg-green-400';
     const daysText = !isValid ? 'text-orange-600' : daysLeft <= 30 && daysKnown ? 'text-orange-600 font-bold' : daysLeft <= 90 && daysKnown ? 'text-yellow-700' : 'text-green-700';
-    const statusMsg = !isValid ? (data.issues?.[0] || 'Certificate could not be verified') : !daysKnown ? 'Certificate valid — expiry details unavailable' : daysLeft <= 30 ? 'Expires very soon — renew immediately' : daysLeft <= 90 ? 'Expiring within 90 days — schedule renewal' : 'Certificate valid and healthy';
+    const statusMsg = !isValid ? (data.issues?.[0] || 'Certificate could not be verified')
+      : daysLeft <= 30 && daysKnown ? 'Expires very soon — renew immediately'
+      : daysLeft <= 90 && daysKnown ? 'Expiring within 90 days — schedule renewal'
+      : 'Certificate valid and healthy';
+    // Build grid cells — only include cells with real data (no "Unknown" / "—" placeholders)
+    const issuerCell = data.issuer ? `<div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs text-slate-400 mb-1">Issued by</div>
+          <div class="text-sm font-semibold text-slate-700">${esc(data.issuer)}</div>
+        </div>` : '';
+    const validFromCell = data.valid_from ? `<div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs text-slate-400 mb-1">Valid from</div>
+          <div class="text-sm font-medium text-slate-700">${esc(data.valid_from)}</div>
+        </div>` : '';
+    const validToCell = data.valid_to ? `<div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs text-slate-400 mb-1">Expires</div>
+          <div class="text-sm font-medium ${daysText}">${esc(data.valid_to)}</div>
+        </div>` : '';
+    const gridCells = issuerCell + `<div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs text-slate-400 mb-1">Status</div>
+          <div class="text-sm font-semibold ${isValid ? 'text-green-700' : 'text-orange-600'}">${isValid ? '✓ Valid' : '✗ Invalid'}</div>
+        </div>` + validFromCell + validToCell;
+    // If cert is valid but we have zero extra detail (no issuer, no dates), show a concise summary only
+    const hasDetail = data.issuer || data.valid_from || data.valid_to;
     detail = `<div class="mt-3 space-y-3">
       ${isValid && daysKnown ? `<div class="flex items-center gap-3">
         <div class="flex-1 bg-slate-100 rounded-full h-2.5">
@@ -2332,25 +2359,9 @@ function renderSection(d) {
         <span class="text-base font-bold ${daysText} shrink-0">${daysLeft}d</span>
         <span class="text-sm text-slate-400 shrink-0">remaining</span>
       </div>` : ''}
-      <div class="grid grid-cols-2 gap-2">
-        <div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-xs text-slate-400 mb-1">Issued by</div>
-          <div class="text-sm font-semibold text-slate-700">${esc(data.issuer || 'Unknown')}</div>
-        </div>
-        <div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-xs text-slate-400 mb-1">Status</div>
-          <div class="text-sm font-semibold ${isValid ? 'text-green-700' : 'text-orange-600'}">${isValid ? '✓ Valid' : '✗ Invalid'}</div>
-        </div>
-        ${data.valid_from ? `<div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-xs text-slate-400 mb-1">Valid from</div>
-          <div class="text-sm font-medium text-slate-700">${esc(data.valid_from)}</div>
-        </div>` : ''}
-        ${data.valid_to ? `<div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-xs text-slate-400 mb-1">Expires</div>
-          <div class="text-sm font-medium ${daysText}">${esc(data.valid_to)}</div>
-        </div>` : ''}
-      </div>
-      <div class="text-sm ${daysText}">${esc(statusMsg)}</div>
+      ${hasDetail ? `<div class="grid grid-cols-2 gap-2">${gridCells}</div>` : ''}
+      <div class="text-sm ${isValid ? 'text-green-700' : 'text-orange-600'}">${esc(statusMsg)}</div>
+      ${!hasDetail && isValid ? '<div class="text-xs text-slate-400">Full certificate details not retrievable from crt.sh — verify expiry and issuer manually at <a href="https://www.ssllabs.com/ssltest/" target="_blank" rel="noopener" class="underline hover:text-blue-500">SSL Labs</a>.</div>' : ''}
     </div>`;
 
   } else if (d.module === 'domain_intel' && data) {
@@ -2407,7 +2418,7 @@ function renderSection(d) {
         ${hasDkim ? `<div class="text-xs font-mono text-slate-400 mt-2">Selectors: ${esc(dkimList)}</div>` : ''}
         ${data.spf ? `<div class="text-xs font-mono text-slate-400 mt-1 truncate">SPF: ${esc(data.spf)}</div>` : ''}
       </div>
-      <ul class="space-y-1">${issues}</ul>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
   } else if (d.module === 'crux' && data) {
