@@ -2332,10 +2332,12 @@ function renderSection(d) {
       : daysLeft <= 30 && daysKnown ? 'Expires very soon — renew immediately'
       : daysLeft <= 90 && daysKnown ? 'Expiring within 90 days — schedule renewal'
       : 'Certificate valid and healthy';
-    // Build grid cells — only include cells with real data (no "Unknown" / "—" placeholders)
-    const issuerCell = data.issuer ? `<div class="bg-slate-50 rounded-lg p-3">
+    // Build grid cells — only include cells with real data (no "Unknown" / placeholder strings)
+    const _SSL_PLACEHOLDERS = new Set(['Unknown', 'Unverified', 'Verified (details unavailable)', '']);
+    const realIssuer = data.issuer && !_SSL_PLACEHOLDERS.has(data.issuer) ? data.issuer : null;
+    const issuerCell = realIssuer ? `<div class="bg-slate-50 rounded-lg p-3">
           <div class="text-xs text-slate-400 mb-1">Issued by</div>
-          <div class="text-sm font-semibold text-slate-700">${esc(data.issuer)}</div>
+          <div class="text-sm font-semibold text-slate-700">${esc(realIssuer)}</div>
         </div>` : '';
     const validFromCell = data.valid_from ? `<div class="bg-slate-50 rounded-lg p-3">
           <div class="text-xs text-slate-400 mb-1">Valid from</div>
@@ -2350,7 +2352,7 @@ function renderSection(d) {
           <div class="text-sm font-semibold ${isValid ? 'text-green-700' : 'text-orange-600'}">${isValid ? '✓ Valid' : '✗ Invalid'}</div>
         </div>` + validFromCell + validToCell;
     // If cert is valid but we have zero extra detail (no issuer, no dates), show a concise summary only
-    const hasDetail = data.issuer || data.valid_from || data.valid_to;
+    const hasDetail = realIssuer || data.valid_from || data.valid_to;
     detail = `<div class="mt-3 space-y-3">
       ${isValid && daysKnown ? `<div class="flex items-center gap-3">
         <div class="flex-1 bg-slate-100 rounded-full h-2.5">
@@ -3453,6 +3455,7 @@ function renderComputedSections(data) {
       </div>
       ${allSections || '<div class="text-xs text-slate-400 py-2">No technology fingerprints detected</div>'}
       <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
+        <span class="text-slate-300 italic">Fingerprint-based · individual signals may vary</span>
         ${techData.page_weight_kb > 0 ? `<span>Page size: <span class="font-medium ${techData.page_weight_kb > 500 ? 'text-amber-600' : 'text-slate-600'}">${techData.page_weight_kb} KB</span>${techData.page_weight_kb > 500 ? ' — consider optimising' : ''}</span>` : ''}
         ${(() => { const rbs = techData.render_blocking_scripts ?? 0; return rbs > 0 ? `<span class="text-amber-600 font-medium">⚡ ${rbs} render-blocking script${rbs > 1 ? 's' : ''} — add async/defer</span>` : rbs === 0 && techData.page_weight_kb > 0 ? '<span class="text-green-600">✓ No render-blocking scripts</span>' : ''; })()}
         ${totalThirdParty > 5 ? `<span class="text-amber-600">⚠ ${totalThirdParty} 3rd-party domains — review for privacy impact</span>` : totalThirdParty > 0 ? `<span>${totalThirdParty} 3rd-party domains</span>` : ''}
@@ -3932,7 +3935,10 @@ function renderComputedSections(data) {
   // ── Keyword Research ──────────────────────────────────────────────────────
   // Skip if AI was unavailable — template-generated keywords are too generic to be useful.
   if (kwData?.keywords?.length && kwData.is_reliable !== false) {
-    const kws = kwData.keywords.slice(0, 25);
+    // Filter autocomplete noise: company-name suffixes (ltd, inc, corp, etc.) slip through
+    const _SUFFIX_RE = /\b(ltd|inc|corp|plc|llc|gmbh|ag|bv|pty|s\.a\.|co\.)\.?\s*$/i;
+    const kws = kwData.keywords.filter(k => !_SUFFIX_RE.test(k.keyword)).slice(0, 25);
+    if (!kws.length) return; // nothing valid to show
     const intentMeta = {
       transactional: { label: 'Transactional', cls: 'bg-orange-100 text-orange-700 border-orange-200' },
       commercial:    { label: 'Commercial',    cls: 'bg-blue-100 text-blue-700 border-blue-200' },
@@ -3940,6 +3946,8 @@ function renderComputedSections(data) {
       local:         { label: 'Local',         cls: 'bg-green-100 text-green-700 border-green-200' },
     };
     const seeds = kwData.seed_queries ?? [];
+    // Only show GEO column if at least one keyword has geo_potential
+    const hasGeo = kws.some(k => k.geo_potential);
 
     addCard('card-keyword-research', 'geo', `
       <div class="flex items-start justify-between mb-3">
@@ -3950,9 +3958,9 @@ function renderComputedSections(data) {
             ${kwData.location && kwData.location !== 'your area' ? ` · Location: <span class="font-medium text-slate-600">${esc(kwData.location)}</span>` : ''}
           </div>
         </div>
-        <div class="flex items-center gap-2 text-[10px] text-slate-400">
+        ${hasGeo ? `<div class="flex items-center gap-2 text-[10px] text-slate-400">
           <span class="text-purple-600 font-medium">✦ = AI search potential</span>
-        </div>
+        </div>` : ''}
       </div>
       ${seeds.length ? `
         <div class="mb-3">
@@ -3960,23 +3968,21 @@ function renderComputedSections(data) {
           <div class="flex flex-wrap gap-1.5">${seeds.map(s => `<span class="text-[10px] font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">${esc(s)}</span>`).join('')}</div>
         </div>` : ''}
       <div class="border border-slate-100 rounded-lg overflow-hidden">
-        <div class="grid grid-cols-[1fr_auto_auto] text-[10px] font-semibold text-slate-400 uppercase tracking-wide bg-slate-50 px-3 py-2 border-b border-slate-100">
-          <span>Keyword</span><span class="text-center w-24">Intent</span><span class="text-center w-10">GEO</span>
+        <div class="grid ${hasGeo ? 'grid-cols-[1fr_auto_auto]' : 'grid-cols-[1fr_auto]'} text-[10px] font-semibold text-slate-400 uppercase tracking-wide bg-slate-50 px-3 py-2 border-b border-slate-100">
+          <span>Keyword</span><span class="text-center w-24">Intent</span>${hasGeo ? '<span class="text-center w-10">GEO</span>' : ''}
         </div>
         <div class="divide-y divide-slate-50">
           ${kws.map(k => {
             const m = intentMeta[k.intent] ?? intentMeta.commercial;
-            return `<div class="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2 hover:bg-slate-50 transition-colors">
+            return `<div class="grid ${hasGeo ? 'grid-cols-[1fr_auto_auto]' : 'grid-cols-[1fr_auto]'} items-center px-3 py-2 hover:bg-slate-50 transition-colors">
               <span class="text-xs text-slate-800 truncate pr-2">${esc(k.keyword)}</span>
               <span class="text-[10px] font-medium border rounded-full px-2 py-0.5 w-24 text-center ${m.cls}">${m.label}</span>
-              <span class="text-center w-10 text-[13px]">${k.geo_potential ? '<span class="text-purple-600" title="Likely to appear in AI-generated answers">✦</span>' : '<span class="text-slate-200">—</span>'}</span>
+              ${hasGeo ? `<span class="text-center w-10 text-[13px]">${k.geo_potential ? '<span class="text-purple-600" title="Likely to appear in AI-generated answers">✦</span>' : '<span class="text-slate-200">—</span>'}</span>` : ''}
             </div>`;
           }).join('')}
         </div>
       </div>
-      <div class="mt-2 text-[10px] text-slate-400">
-        ✦ = keyword likely to trigger AI-generated answers in ChatGPT, Perplexity &amp; Gemini
-      </div>
+      ${hasGeo ? '<div class="mt-2 text-[10px] text-slate-400">✦ = keyword likely to trigger AI-generated answers in ChatGPT, Perplexity &amp; Gemini</div>' : ''}
     `);
   }
 
