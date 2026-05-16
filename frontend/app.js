@@ -2296,6 +2296,7 @@ function renderSection(d) {
           <div class="text-xs text-slate-400">${data.tests_passed} of ${data.tests_quantity} checks passed · Mozilla Observatory</div>
         </div>
       </div>
+      ${data.score >= 100 && failed.length > 0 ? `<div class="text-[11px] text-slate-400 -mt-1 leading-relaxed">Score is capped at 100 — Observatory's bonus/penalty system can offset deductions; the flagged issues below still represent real risks.</div>` : ''}
 
       <!-- Severity summary pills or all-pass banner -->
       ${sevSummary
@@ -3504,7 +3505,9 @@ function renderComputedSections(data) {
         </div>
         <div class="bg-slate-50 rounded-lg p-2.5 col-span-2">
           <div class="text-slate-400 mb-0.5">TXT records</div>
-          <div class="font-medium text-slate-800">${dns.txt_count} records${dns.txt_count > 5 ? ' — complex DNS zone' : ''}</div>
+          <div class="font-medium text-slate-800">${dns.txt_count != null
+            ? `${dns.txt_count} record${dns.txt_count !== 1 ? 's' : ''}${dns.txt_count > 5 ? ' — complex DNS zone' : ''}`
+            : '—'}</div>
         </div>
       </div>
     `);
