@@ -1753,7 +1753,7 @@ function renderSection(d) {
         </div>
       </div>
       <div class="flex flex-wrap gap-1.5">
-        <span class="${data.blocked_ai_bots ? 'bg-orange-50 text-orange-700 border-orange-200' : 'bg-green-50 text-green-700 border-green-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${data.blocked_ai_bots ? '🚫 AI bots blocked' : '✓ AI bots allowed'}</span>
+        <span class="${(data.blocked_ai_bots?.length ?? 0) > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : 'bg-green-50 text-green-700 border-green-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${(data.blocked_ai_bots?.length ?? 0) > 0 ? '🚫 AI bots blocked' : '✓ AI bots allowed'}</span>
         <span class="${data.llms_txt_present ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${data.llms_txt_present ? '✓ llms.txt' : '✗ No llms.txt'}</span>
         ${data.compression?.enabled ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">${esc(data.compression.encoding)} ✓</span>` : '<span class="bg-orange-50 text-orange-600 border border-orange-200 text-xs px-2.5 py-1 rounded-full font-medium">No compression</span>'}
         ${(data.render_blocking_scripts ?? 0) > 0 ? `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full font-medium">⚠ ${data.render_blocking_scripts} blocking scripts</span>` : ''}
