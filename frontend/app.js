@@ -8,23 +8,36 @@ const hiwModal  = document.getElementById('hiw-modal');
 const hiwClose  = document.getElementById('hiw-close');
 
 if (hiwClose) hiwClose.addEventListener('click', () => hiwModal?.classList.add('hidden'));
-hiwModal.addEventListener('click', (e) => { if (e.target === hiwModal) hiwModal.classList.add('hidden'); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hiwModal.classList.add('hidden'); });
+if (hiwModal) {
+  hiwModal.addEventListener('click', (e) => { if (e.target === hiwModal) hiwModal.classList.add('hidden'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hiwModal.classList.add('hidden'); });
+}
+
+// Global keyboard shortcut: '/' focuses search input (like GitHub/YouTube)
+document.addEventListener('keydown', (e) => {
+  if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+    e.preventDefault();
+    const si = document.getElementById('search-input');
+    if (si) { si.focus(); si.select(); si.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  }
+});
 
 document.querySelectorAll('.hiw-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.hiw-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.hiw-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
-    document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+    document.getElementById(`tab-${tab.dataset.tab}`)?.classList.add('active');
   });
 });
 
 // ── URL parameter auto-start (?d=stripe.com or ?domain=stripe.com) ────────
+// Deferred to end of script via setTimeout(0) so all let/const at file scope
+// are initialised before startAudit() runs (avoids TDZ ReferenceErrors).
 (function () {
   const params = new URLSearchParams(location.search);
   const d = params.get('d') || params.get('domain');
-  if (d) { window.addEventListener('DOMContentLoaded', () => {}, { once: true }); startAudit(d); }
+  if (d) setTimeout(() => { const si = document.getElementById('search-input'); if (si) si.value = d; startAudit(d); }, 0);
 })();
 
 // ── Social proof: fetch audit count + recently scanned feed ──────────────
@@ -52,6 +65,25 @@ let computedSectionsRendered = false;
 let auditStartTime = 0;
 let auditTimerInterval = null;
 
+// Descriptive loading messages shown in the progress status bar — makes the audit feel live
+const MODULE_LOADING_MSG = {
+  technical_seo:   'Fetching robots.txt, sitemap & HTTP headers…',
+  schema_audit:    'Extracting JSON-LD structured data from HTML…',
+  content_quality: 'Analysing page content, headings & readability…',
+  authority:       'Querying Wayback Machine, Wikipedia & Open PageRank…',
+  geo_predicted:   'Running AI citation simulation via Llama 3.1…',
+  on_page_seo:     'Querying Google PageSpeed Insights API…',
+  off_page_seo:    'Checking DNS records & social presence…',
+  site_intel:      'Looking up IP info & third-party scripts…',
+  redirect_chain:  'Tracing live HTTP redirect chain…',
+  accessibility:   'Checking WCAG accessibility patterns via PageSpeed…',
+  security_audit:  'Scanning HTTP security headers via Mozilla Observatory…',
+  ssl_cert:        'Verifying TLS certificate via crt.sh CT log…',
+  domain_intel:    'Querying RDAP WHOIS & Cloudflare DoH DNS…',
+  crux:            'Fetching 28-day real Chrome user data from Google CrUX…',
+  keywords:        'Generating AI-powered keyword suggestions…',
+};
+
 const MODULE_CATEGORY = {
   technical_seo: 'seo', schema_audit: 'seo', content_quality: 'seo',
   on_page_seo: 'seo', accessibility: 'seo',
@@ -62,66 +94,112 @@ const MODULE_CATEGORY = {
   domain_intel: 'seo', crux: 'seo',
 };
 
-// Display order: GEO/AI visibility first → Authority → Content → Technical → Site details → Action
+// Data source attribution — shown as trust badge on each module card header
+const MODULE_SOURCE = {
+  technical_seo:   { label: 'Live fetch · robots · sitemap', cls: 'src-blue' },
+  schema_audit:    { label: 'HTML parse · JSON-LD',          cls: 'src-slate' },
+  content_quality: { label: 'HTML parse',                    cls: 'src-slate' },
+  authority:       { label: 'Wayback · Wikipedia · OPR',    cls: 'src-green' },
+  geo_predicted:   { label: 'Workers AI · Llama 3.1',       cls: 'src-purple' },
+  on_page_seo:     { label: 'PageSpeed API · HTML',         cls: 'src-blue' },
+  off_page_seo:    { label: 'DNS · Social scrape',           cls: 'src-teal' },
+  site_intel:      { label: 'ipinfo · DoH DNS',              cls: 'src-slate' },
+  redirect_chain:  { label: 'Live HTTP trace',               cls: 'src-blue' },
+  accessibility:   { label: 'WCAG parse · PageSpeed',        cls: 'src-slate' },
+  security_audit:  { label: 'Mozilla Observatory',           cls: 'src-orange' },
+  ssl_cert:        { label: 'crt.sh CT log',                 cls: 'src-green' },
+  domain_intel:    { label: 'RDAP · Cloudflare DoH',         cls: 'src-blue' },
+  crux:            { label: 'Google CrUX API',               cls: 'src-green' },
+  keywords:        { label: 'Autocomplete · Workers AI',     cls: 'src-purple' },
+};
+
+// Display order: most verifiable data first → least certain last.
+// Principle: every card a user sees should earn its place with accuracy.
+// Tier 1: Direct network/DNS measurements (always 100% factual)
+// Tier 2: Real Chrome user data (measured by Google from millions of real visits)
+// Tier 3: HTTP response analysis (fetched directly from the server)
+// Tier 4: Verified third-party databases (domain age, Wikipedia, Common Crawl)
+// Tier 5: HTML content analysis (accurate when page is accessible, suppressed if bot-blocked)
+// Tier 6: AI inference & predictions (model-generated, lower certainty)
+// Tier 7: Tools & actions
 const CARD_ORDER = {
-  // 0. Top action — always first
+  // ── Summary (always pinned at top) ──────────────────────────────────
+  'plain-english-report':        3,
   'priority-card':               5,
-  // 1. GEO & AI visibility — the core value prop
-  'module-geo_predicted':       10,
-  'card-ai-business':           12,
-  'card-ai-content':            13,
-  'card-ai-trust':              14,
-  'card-ai-freshness':          15,
-  'card-ai-opportunities':      16,
-  'card-eeat':                  20,
-  'card-llms-gen':              25,
-  'card-keyword-research':      30,
-  // 2. Authority & trust — feeds GEO signals
-  'module-authority':           40,
-  'module-off_page_seo':        50,
-  // 3. Content & schema — what AI reads
-  'module-schema_audit':        60,
-  'card-structured-data':       62,
-  'module-content_quality':     70,
-  'module-on_page_seo':         80,
-  'card-readability':           82,
-  'card-serp-preview':          85,
-  'card-international-seo':     87,
-  'card-social-preview':        89,
-  // 4. Technical foundation
-  'module-technical_seo':      100,
-  'module-ssl_cert':           108,
-  'module-redirect_chain':     112,
-  'module-security_audit':     116,
-  'module-domain_intel':       120,
-  'module-crux':               124,
-  'module-accessibility':      128,
-  // 5. Site details — least critical
-  'module-site_intel':         140,
-  'card-tech-stack':           142,
-  'card-dns':                  144,
-  'card-fonts':                146,
-  'card-headings':             148,
-  'card-image-alt':            149,
-  'card-speed':                150,
-  'card-mobile':               151,
-  'card-email-ads':            152,
-  'card-robots':               153,
-  'module-ai_content_insights': 154,
-  // 6. Action
-  'card-keywords-cloud':       160,
-  'card-competitor':           163,
-  'recs-section':              170,
-  'card-embed-code':           180,
+  'card-site-intro':             7,   // Website identity brief (generated from factual signals)
+
+  // ── Tier 1: Direct network measurements (ground truth) ──────────────
+  // HTTP redirect hops, TLS cert, WHOIS/DNS, hosting IP — zero interpretation
+  'module-redirect_chain':       10,   // HTTP redirect hops & HTTPS enforcement
+  'module-ssl_cert':             12,   // TLS certificate validity & issuer
+  'module-domain_intel':         14,   // WHOIS: registrar, expiry, DNSSEC, SPF/DMARC
+  'card-dns':                    16,   // DNS A / MX / NS / AAAA records
+  'module-site_intel':           18,   // IP, hosting provider, third-party scripts
+  'card-tech-stack':             20,   // CMS, CDN, framework detected from response
+  'card-robots':                 22,   // robots.txt content (fetched directly)
+  'card-email-ads':              24,   // SPF record, ads.txt presence
+
+  // ── Tier 2: Real Chrome user data ───────────────────────────────────
+  // 28-day rolling measurements from millions of real visits (Google CrUX)
+  'module-crux':                 28,   // Core Web Vitals — real user data
+  'card-speed':                  30,   // PageSpeed breakdown
+  'card-mobile':                 32,   // Mobile usability
+
+  // ── Tier 3: HTTP response analysis ──────────────────────────────────
+  // Data extracted directly from the fetched server response
+  'module-technical_seo':        38,   // Robots, HTTPS, meta tags, compression
+  'card-serp-preview':           40,   // Google snippet (from fetched title/description)
+  'card-social-preview':         42,   // OG/Twitter card (from fetched HTML)
+  'card-international-seo':      44,   // lang attribute, hreflang tags
+  'module-security_audit':       46,   // HTTP security headers (factual header scan)
+
+  // ── Tier 4: Verified third-party data ───────────────────────────────
+  // External databases cross-referenced for factual signals
+  'module-authority':            52,   // Domain age, Wikipedia, Common Crawl backlinks
+  'module-off_page_seo':         56,   // Email security (DNS), social profiles (HTML)
+
+  // ── Tier 5: HTML content analysis ───────────────────────────────────
+  // Accurate when page is accessible; suppressed entirely when bot-blocked
+  'module-schema_audit':         62,   // JSON-LD structured data extracted from HTML
+  'card-structured-data':        64,   // Raw JSON-LD detail
+  'module-content_quality':      68,   // Word count, headings, links, readability
+  'card-readability':            70,   // Flesch reading ease score
+  'card-headings':               72,   // Heading hierarchy (H1–H6)
+  'module-on_page_seo':          76,   // Image, link & heading analysis
+  'card-image-alt':              78,   // Alt text audit
+  'card-fonts':                  80,   // Web font analysis
+  'module-accessibility':        84,   // WCAG pattern checks
+
+  // ── Tier 6: AI inference & predictions ──────────────────────────────
+  // Model-generated estimates — lower certainty, shown after all factual data
+  'module-geo_predicted':        90,   // AI citation simulation
+  'card-ai-business':            91,   // AI business context
+  'card-ai-content':             92,   // AI content analysis
+  'card-ai-trust':               93,   // AI trust signals
+  'card-ai-freshness':           94,   // AI freshness analysis
+  'card-ai-opportunities':       95,   // AI quick wins
+  'card-eeat':                   96,   // E-E-A-T signals (partially inferred)
+  'card-keyword-research':       97,   // AI keyword suggestions
+  'module-ai_content_insights':  98,   // AI content insights
+
+  // ── Tier 7: Tools & actions ──────────────────────────────────────────
+  'card-llms-gen':              105,   // llms.txt file generator
+  'card-keywords-cloud':        110,   // Page keyword frequency cloud
+  'card-competitor':            115,   // Competitor comparison
+  'recs-section':               120,   // Full prioritised recommendation list
+  'card-embed-code':            125,   // Embed widget
 };
 function cardOrder(id) { return CARD_ORDER[id] ?? 500; }
 
 function scoreContext(score) {
-  if (score >= 85) return 'Top 15% of sites';
-  if (score >= 70) return 'Above average';
+  if (score >= 92) return 'Top 5% globally';
+  if (score >= 85) return 'Top 15% globally';
+  if (score >= 75) return 'Top 30% — strong';
+  if (score >= 65) return 'Above average';
   if (score >= 55) return 'Average range';
-  if (score >= 40) return 'Below average';
-  return 'Needs improvement';
+  if (score >= 45) return 'Below average';
+  if (score >= 30) return 'Needs work';
+  return 'Critical gaps';
 }
 
 function effortTime(effort) {
@@ -445,6 +523,38 @@ document.addEventListener('click', (e) => {
   const fix = e.target.closest('[data-action="toggle-fix"]');
   if (fix) { toggleWhatToDo(fix); return; }
 
+  // Clipboard copy — any element with data-copy="text to copy"
+  const copyEl = e.target.closest('[data-copy]');
+  if (copyEl) {
+    const text = copyEl.dataset.copy;
+    navigator.clipboard.writeText(text).then(() => {
+      const orig = copyEl.textContent;
+      copyEl.textContent = '✓ Copied';
+      setTimeout(() => { copyEl.textContent = orig; }, 2000);
+    });
+    return;
+  }
+
+  // Card collapse toggle — replaces onclick="toggleCardBody(this)"
+  const cardToggle = e.target.closest('[data-action="toggle-card"]');
+  if (cardToggle) { toggleCardBody(cardToggle); return; }
+
+  // Vertical correction pencil — replaces onclick="openVerticalCorrection(...)"
+  const vc = e.target.closest('[data-action="correct-vertical"]');
+  if (vc) { openVerticalCorrection(vc.dataset.domain, vc.dataset.vertical); return; }
+
+  // Run fresh audit — replaces onclick="document.getElementById('reaudit-btn').click()"
+  const reauditAction = e.target.closest('[data-action="reaudit"]');
+  if (reauditAction) { document.getElementById('reaudit-btn')?.click(); return; }
+
+  // Re-audit from vertical-correction notice — replaces inline startAudit onclick
+  const reauditNotice = e.target.closest('[data-action="reaudit-from-notice"]');
+  if (reauditNotice) { reauditNotice.closest('div')?.remove(); startAudit(reauditNotice.dataset.domain); return; }
+
+  // Competitor compare button — replaces onclick="runCompetitorComparison()"
+  const compareBtn = e.target.closest('[data-action="compare"]');
+  if (compareBtn) { runCompetitorComparison(); return; }
+
   // llms.txt generator
   if (e.target.id === 'llms-gen-btn') {
     handleLlmsGen(e.target);
@@ -569,28 +679,30 @@ const searchInput = document.getElementById('search-input');
 const suggestions = document.getElementById('suggestions');
 let debounce;
 
-searchInput.addEventListener('input', () => {
-  clearTimeout(debounce);
-  const q = searchInput.value.trim();
-  if (q.length < 2) { suggestions.classList.add('hidden'); return; }
-  debounce = setTimeout(() => fetchSuggestions(q), 250);
-});
+if (searchInput && suggestions) {
+  searchInput.addEventListener('input', () => {
+    clearTimeout(debounce);
+    const q = searchInput.value.trim();
+    if (q.length < 2) { suggestions.classList.add('hidden'); return; }
+    debounce = setTimeout(() => fetchSuggestions(q), 250);
+  });
 
-searchInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const q = searchInput.value.trim();
+      if (q) { suggestions.classList.add('hidden'); startAudit(q); }
+    }
+  });
+
+  document.getElementById('audit-btn')?.addEventListener('click', () => {
     const q = searchInput.value.trim();
     if (q) { suggestions.classList.add('hidden'); startAudit(q); }
-  }
-});
+  });
 
-document.getElementById('audit-btn')?.addEventListener('click', () => {
-  const q = searchInput.value.trim();
-  if (q) { suggestions.classList.add('hidden'); startAudit(q); }
-});
-
-document.addEventListener('click', (e) => {
-  if (!suggestions.contains(e.target)) suggestions.classList.add('hidden');
-});
+  document.addEventListener('click', (e) => {
+    if (!suggestions.contains(e.target)) suggestions.classList.add('hidden');
+  });
+}
 
 async function fetchSuggestions(q) {
   try {
@@ -741,6 +853,8 @@ function showAuditShell(domain) {
   stopAuditTimer();
   document.getElementById('audit').classList.remove('hidden');
   document.getElementById('scores').classList.add('hidden');
+  document.getElementById('score-insight')?.classList.add('hidden');
+  document.getElementById('data-provenance-row')?.classList.add('hidden');
   document.getElementById('embed-cta').classList.add('hidden');
   document.getElementById('chat-section').classList.add('hidden');
   document.getElementById('cwv-row').classList.add('hidden');
@@ -753,6 +867,7 @@ function showAuditShell(domain) {
   const main = document.getElementById('main-content');
   if (main) main.style.paddingBottom = '';
   document.getElementById('modules').innerHTML = '';
+  window._auditBotBlocked = false; // reset per-audit bot-block flag
   computedSectionsRendered = false;
   const summaryBar = document.getElementById('summary-bar');
   if (summaryBar) { summaryBar.innerHTML = ''; summaryBar.classList.add('hidden'); }
@@ -779,10 +894,8 @@ function showAuditShell(domain) {
   const perfSub = document.getElementById('perf-score-sub');
   if (perfSub) perfSub.textContent = '/100';
   // Reset monitor panel
-  ['monitor-banner'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) { el.style.maxHeight = '0'; el.style.opacity = '0'; }
-  });
+  const monitorBanner = document.getElementById('monitor-banner');
+  if (monitorBanner) { monitorBanner.style.maxHeight = '0'; monitorBanner.style.opacity = '0'; }
   const catTabs = document.getElementById('cat-tabs');
   if (catTabs) catTabs.classList.remove('hidden');
   document.querySelectorAll('.cat-tab').forEach(t => {
@@ -845,19 +958,29 @@ function animateRing(ringId, score, color) {
 function setScoreCircle(key, score, color) {
   const scoreEl = document.getElementById(`${key}-score`);
   const gradeEl = document.getElementById(`${key}-grade`);
-  const ringId = `ring-${key}`;
+  const ctxEl   = document.getElementById(`${key}-context`);
+  const ringId  = `ring-${key}`;
 
-  if (scoreEl) scoreEl.textContent = score;
+  // Animated count-up (matches ring animation duration)
+  if (scoreEl) {
+    const t0 = performance.now(), dur = 900;
+    const tick = (now) => {
+      const p = Math.min((now - t0) / dur, 1);
+      const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic
+      scoreEl.textContent = Math.round(score * eased);
+      if (p < 1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
   if (gradeEl) {
     const g = gradeLabel(score);
     gradeEl.textContent = g.text;
     gradeEl.className = `mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full inline-block ${g.cls}`;
   }
 
-  if (key === 'overall') {
-    const ctx = document.getElementById('overall-context');
-    if (ctx) ctx.textContent = scoreContext(score);
-  }
+  // Percentile context on every ring (overall may be overridden below by cross-metric enrichment)
+  if (ctxEl) ctxEl.textContent = scoreContext(score);
 
   // Ring color: green ≥70, amber 40-69, red <40
   const ringColor = score >= 70 ? '#16a34a' : score >= 40 ? '#d97706' : '#ea580c';
@@ -917,6 +1040,160 @@ function openAuditStream(domain, attempt) {
   });
 }
 
+function renderSiteIntro(data) {
+  if (document.getElementById('card-site-intro')) return;
+
+  const mods = data.modules ?? {};
+  const authData    = mods.authority?.data;
+  const schemaData  = mods.schema_audit?.data;
+  const techData    = mods.technical_seo?.data;
+  const offPageData = mods.off_page_seo?.data;
+
+  // Need at least authority data to produce anything meaningful
+  if (!authData) return;
+
+  // ── Registration year (RDAP — ground truth) ───────────────────────────────
+  let registrationYear = null;
+  const nowYear = new Date().getFullYear();
+  if (authData.registration_date) {
+    const y = new Date(authData.registration_date).getFullYear();
+    if (!isNaN(y) && y > 1990 && y <= nowYear) registrationYear = y;
+  }
+  // Wayback earliest crawl as a fallback ("active since" — slightly different meaning)
+  let waybackYear = null;
+  if (!registrationYear && authData.wayback_first_seen) {
+    const y = new Date(authData.wayback_first_seen).getFullYear();
+    if (!isNaN(y) && y > 1990 && y <= nowYear) waybackYear = y;
+  }
+
+  // ── Domain age ────────────────────────────────────────────────────────────
+  const ageYrs = authData.domain_age_years ?? null;
+
+  // ── Schema-declared entity type (what the site explicitly claims to be) ───
+  // Only use unambiguous entity/business schemas — skip structural schemas that say
+  // nothing about what type of organisation the site is (WebPage, ImageObject, etc.)
+  const ENTITY_SCHEMAS = new Set([
+    'Organization','Corporation','LocalBusiness','NewsMediaOrganization',
+    'SoftwareApplication','WebApplication','MobileApplication',
+    'Dentist','Physician','Hospital','MedicalClinic','LegalService','Attorney',
+    'Accountant','RealEstateAgent','Plumber','Electrician','GeneralContractor',
+    'HVACBusiness','Locksmith','MovingCompany','AutoDealer','AutoRepair',
+    'Restaurant','FoodEstablishment','Bakery','CafeOrCoffeeShop',
+    'Hotel','LodgingBusiness','Store','ClothingStore','BookStore',
+    'HealthClub','SportsClub','Gym','BeautySalon','HairSalon',
+    'CollegeOrUniversity','ElementarySchool','School','EducationalOrganization',
+    'GovernmentOrganization','NGO','Nonprofit',
+  ]);
+  // Site-identity schemas are ones that tell you the type of entity
+  const entitySchemas = (schemaData?.schemas_found ?? []).filter(s => ENTITY_SCHEMAS.has(s));
+
+  // ── Sentences — only include sentences where every word is verifiable ──────
+  const sentences = [];
+
+  // Sentence 1: domain age / registration
+  if (registrationYear !== null && ageYrs !== null) {
+    const stability = ageYrs >= 10 ? 'a well-established online presence'
+      : ageYrs >= 5  ? 'an established web presence'
+      : ageYrs >= 2  ? 'a growing web presence'
+      : 'a relatively new web presence';
+    sentences.push(
+      `The domain was registered in ${registrationYear} and has been active for ${ageYrs} year${ageYrs !== 1 ? 's' : ''}, reflecting ${stability}.`
+    );
+  } else if (ageYrs !== null) {
+    const stability = ageYrs >= 10 ? 'a well-established online presence'
+      : ageYrs >= 5  ? 'an established web presence'
+      : ageYrs >= 2  ? 'a growing web presence'
+      : 'a relatively new web presence';
+    sentences.push(
+      `The domain has been active for ${ageYrs} year${ageYrs !== 1 ? 's' : ''}, reflecting ${stability}.`
+    );
+  } else if (waybackYear !== null) {
+    sentences.push(`The domain was first crawled by the Wayback Machine in ${waybackYear}.`);
+  } else if (registrationYear !== null) {
+    sentences.push(`The domain was registered in ${registrationYear}.`);
+  }
+
+  // Sentence 2: schema-declared entity type (only when unambiguous entity schemas exist)
+  if (entitySchemas.length > 0) {
+    const schemaDisplay = entitySchemas.slice(0, 2).join(' and ');
+    sentences.push(`The site's structured data declares it as a ${esc(schemaDisplay)}.`);
+  }
+
+  // Sentence 3: verified authority signals (third-party lookups only)
+  const authSignals = [];
+  if (authData.wikipedia)   authSignals.push('a Wikipedia article');
+  if (authData.wikidata_id) authSignals.push('a Wikidata knowledge graph entry');
+  const backlinkCount = authData.backlink_sample_count ?? 0;
+  if (backlinkCount >= 10)  authSignals.push(`${backlinkCount}+ linking domains in Common Crawl`);
+  const socialCount = offPageData?.social_profiles?.length ?? 0;
+  if (socialCount >= 2)     authSignals.push(`${socialCount} social media profiles`);
+  if (authSignals.length > 0) {
+    sentences.push(`Independent sources confirm ${authSignals.slice(0, 3).join(', ')}.`);
+  }
+
+  // Don't render the card if there's nothing factual to say
+  if (sentences.length === 0) return;
+
+  // ── Badges (all verifiable) ───────────────────────────────────────────────
+  const badges = [];
+  if (registrationYear) {
+    badges.push(`<span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full">Est. ${registrationYear}</span>`);
+  }
+  if (ageYrs !== null) {
+    const ageBg = ageYrs >= 10 ? 'bg-green-50 text-green-700 border-green-200'
+      : ageYrs >= 5 ? 'bg-blue-50 text-blue-700 border-blue-200'
+      : 'bg-amber-50 text-amber-700 border-amber-200';
+    badges.push(`<span class="${ageBg} border text-xs px-2.5 py-1 rounded-full">${ageYrs} yr domain</span>`);
+  }
+  if (authData.wikipedia) {
+    badges.push('<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Wikipedia</span>');
+  }
+  if (authData.wikidata_id) {
+    badges.push('<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Wikidata</span>');
+  }
+  if (authData.page_rank != null) {
+    const oprBg = authData.page_rank >= 7 ? 'bg-green-50 text-green-700 border-green-200'
+      : authData.page_rank >= 4 ? 'bg-amber-50 text-amber-700 border-amber-200'
+      : 'bg-slate-100 text-slate-600 border-slate-200';
+    badges.push(`<span class="${oprBg} border text-xs px-2.5 py-1 rounded-full">OPR ${authData.page_rank.toFixed(1)}/10</span>`);
+  }
+
+  const el = document.createElement('div');
+  el.id = 'card-site-intro';
+  el.className = 'bg-white rounded-xl border border-slate-200 p-5 fade-in';
+  el.dataset.category = 'all';
+  el.style.order = cardOrder('card-site-intro');
+
+  const wikiSummary = authData.wikipedia_summary
+    ? `<div class="mt-3 pt-3 border-t border-slate-100">
+        <div class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
+          Wikipedia summary
+        </div>
+        <p class="text-xs text-slate-500 leading-relaxed italic">${esc(authData.wikipedia_summary.slice(0, 240))}${authData.wikipedia_summary.length > 240 ? '…' : ''}</p>
+      </div>` : '';
+
+  el.innerHTML = `
+    <div class="flex items-center gap-3 mb-3">
+      <div class="w-9 h-9 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0 overflow-hidden">
+        <img src="https://www.google.com/s2/favicons?sz=32&domain_url=${esc(data.domain)}" alt="" class="w-5 h-5" onerror="this.style.display='none';this.parentElement.innerHTML='<svg class=\\'w-5 h-5 text-blue-400\\' fill=\\'none\\' viewBox=\\'0 0 24 24\\' stroke=\\'currentColor\\'><circle cx=\\'12\\' cy=\\'12\\' r=\\'10\\'/></svg>'">
+      </div>
+      <div>
+        <div class="font-semibold text-sm text-slate-800">About ${esc(data.domain)}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">Verified signals only · no AI inference</div>
+      </div>
+    </div>
+    <div class="space-y-1.5 text-sm text-slate-600 leading-relaxed">
+      ${sentences.map(s => `<p class="flex gap-2"><span class="text-blue-300 shrink-0 mt-1">›</span><span>${s}</span></p>`).join('')}
+    </div>
+    ${badges.length > 0 ? `<div class="flex flex-wrap gap-1.5 mt-4">${badges.join('')}</div>` : ''}
+    ${wikiSummary}
+  `;
+
+  document.getElementById('modules').appendChild(el);
+  applyActiveCatFilter(el);
+}
+
 function renderFullAudit(data) {
   if (!data?.domain) return;
   const auditDate = data.created_at ? new Date(data.created_at).toLocaleString() : new Date().toLocaleString();
@@ -929,7 +1206,20 @@ function renderFullAudit(data) {
   const dateEl = document.getElementById('audit-date');
   const faviconEl = document.getElementById('domain-favicon');
   if (nameEl) nameEl.textContent = data.domain;
-  if (dateEl) dateEl.textContent = `Audit complete · ${auditDate}`;
+  // Show age of cached result so users know if it's stale
+  let dateLabel = `Audit complete · ${auditDate}`;
+  if (data.created_at) {
+    const ageMs = Date.now() - new Date(data.created_at).getTime();
+    const ageH = Math.round(ageMs / 3600000);
+    const ageD = Math.floor(ageMs / 86400000);
+    const ageStr = ageD >= 1 ? `${ageD}d ago` : ageH >= 1 ? `${ageH}h ago` : 'just now';
+    dateLabel = `Audit complete · ${ageStr}`;
+    if (ageH >= 6 && dateEl) {
+      dateEl.title = `Cached result from ${auditDate} — click Fresh Audit for fresh data`;
+      dateEl.classList.add('text-amber-500');
+    }
+  }
+  if (dateEl) dateEl.textContent = dateLabel;
   if (faviconEl && !faviconEl.querySelector('img')) {
     faviconEl.innerHTML = `<img src="https://www.google.com/s2/favicons?sz=32&domain_url=${encodeURIComponent(data.domain)}" alt="" class="w-6 h-6" onerror="this.style.display='none'">`;
   }
@@ -976,41 +1266,63 @@ function renderFullAudit(data) {
     }
 
     // Score insight callout (plain-English summary below the gauges)
-    requestAnimationFrame(() => {
-      const insightEl = document.getElementById('score-insight');
-      const insightText = document.getElementById('score-insight-text');
-      const insightSub = document.getElementById('score-insight-sub');
-      if (insightEl && insightText && data.overall_score !== undefined) {
-        const _seo = data.seo_score ?? 0, _geo = data.geo_score ?? 0;
-        insightText.textContent = `${data.overall_score}/100 — ${scoreContext(data.overall_score)}.`;
-        let sub = '';
-        if (_seo > _geo + 15) {
-          sub = `Your traditional SEO is solid (${_seo}), but AI search visibility needs work (${_geo}). Focus on E-E-A-T signals and structured data.`;
-        } else if (_geo > _seo + 15) {
-          sub = `Great AI visibility signals (${_geo})! Shore up traditional SEO fundamentals (${_seo}) for balanced coverage.`;
-        } else if (data.overall_score >= 80) {
-          sub = `Strong across the board — fine-tune your weakest signals for the final push.`;
-        } else if (data.overall_score >= 60) {
-          sub = `Room to grow. The priority card below shows the single highest-impact fix.`;
-        } else {
-          sub = `Several key issues found. Work through the top recommendations to improve visibility.`;
-        }
-        insightSub.textContent = sub;
-        insightEl.classList.remove('hidden');
+    const insightEl = document.getElementById('score-insight');
+    const insightText = document.getElementById('score-insight-text');
+    const insightSub = document.getElementById('score-insight-sub');
+    if (insightEl && insightText) {
+      const _iseo = data.seo_score ?? 0, _igeo = data.geo_score ?? 0;
+      const pctLabel = scoreContext(data.overall_score);
+      insightText.textContent = `${data.overall_score}/100 overall · ${pctLabel}`;
+      // Dynamic colour tint based on score
+      const s = data.overall_score;
+      const [bg, border, textCls] = s >= 80 ? ['#f0fdf4','#bbf7d0','#15803d']
+                                   : s >= 60 ? ['#eff6ff','#bfdbfe','#1d4ed8']
+                                   :           ['#fffbeb','#fde68a','#92400e'];
+      insightEl.style.cssText = `background:${bg};border:1px solid ${border};border-radius:12px;`;
+      insightText.style.color = textCls;
+      let sub = '';
+      if (_iseo > _igeo + 15) {
+        sub = `SEO fundamentals are solid (${_iseo}/100) but AI search visibility lags behind (${_igeo}/100). Adding structured data, E-E-A-T signals, and llms.txt can close the gap.`;
+      } else if (_igeo > _iseo + 15) {
+        sub = `Strong AI visibility signals (${_igeo}/100). Shoring up technical SEO (${_iseo}/100) will unlock top-tier ranking performance across both traditional and AI search.`;
+      } else if (data.overall_score >= 80) {
+        sub = `Excellent foundation — fine-tune the highest-impact signals below to enter the top tier.`;
+      } else if (data.overall_score >= 60) {
+        sub = `Good base to build from. The prioritised action plan below shows where each fix will move your score most.`;
+      } else {
+        sub = `Multiple foundational issues found. Follow the ranked action plan below — even fixing the top 3 will noticeably improve your visibility.`;
       }
-    });
+      insightSub.textContent = sub;
+      insightEl.classList.remove('hidden');
+      document.getElementById('data-provenance-row')?.classList.remove('hidden');
+    }
 
-    // CWV pill row
-    if (ps) {
-      const cwvRow = document.getElementById('cwv-row');
-      if (cwvRow) {
-        const pills = [
+    // CWV pill row — PageSpeed primary, CrUX p75 fallback
+    const cwvRow = document.getElementById('cwv-row');
+    if (cwvRow) {
+      let pills = '';
+      if (ps) {
+        pills = [
           ps.lcp_s  != null && cwvPill('LCP',  ps.lcp_s.toFixed(1)  + 's', ps.lcp_s  <= 2.5 ? 'good' : ps.lcp_s  <= 4   ? 'needs' : 'poor'),
           ps.cls    != null && cwvPill('CLS',  ps.cls.toFixed(3),           ps.cls    <= 0.1  ? 'good' : ps.cls    <= 0.25 ? 'needs' : 'poor'),
           ps.fcp_s  != null && cwvPill('FCP',  ps.fcp_s.toFixed(1)  + 's', ps.fcp_s  <= 1.8  ? 'good' : ps.fcp_s  <= 3   ? 'needs' : 'poor'),
           ps.ttfb_s != null && cwvPill('TTFB', ps.ttfb_s.toFixed(2) + 's', ps.ttfb_s <= 0.8  ? 'good' : ps.ttfb_s <= 1.8 ? 'needs' : 'poor'),
           ps.tbt_ms != null && cwvPill('TBT',  ps.tbt_ms + 'ms',           ps.tbt_ms <= 200  ? 'good' : ps.tbt_ms <= 600 ? 'needs' : 'poor'),
         ].filter(Boolean).join('');
+      } else if (cruxData?.has_data) {
+        // Fall back to CrUX p75 real-user metrics when PageSpeed is unavailable
+        const cx = cruxData;
+        const lcp  = cx.lcp?.p75;  const cls = cx.cls?.p75;
+        const inp  = cx.inp?.p75;  const fcp = cx.fcp?.p75; const ttfb = cx.ttfb?.p75;
+        pills = [
+          lcp  != null && cwvPill('LCP',  (lcp/1000).toFixed(1)+'s',        lcp  <= 2500 ? 'good' : lcp  <= 4000 ? 'needs' : 'poor'),
+          cls  != null && cwvPill('CLS',  Number(cls).toFixed(3),            cls  <= 0.1  ? 'good' : cls  <= 0.25 ? 'needs' : 'poor'),
+          inp  != null && cwvPill('INP',  inp+'ms',                          inp  <= 200  ? 'good' : inp  <= 500  ? 'needs' : 'poor'),
+          fcp  != null && cwvPill('FCP',  (fcp/1000).toFixed(1)+'s',        fcp  <= 1800 ? 'good' : fcp  <= 3000 ? 'needs' : 'poor'),
+          ttfb != null && cwvPill('TTFB', ttfb+'ms',                         ttfb <= 800  ? 'good' : ttfb <= 1800 ? 'needs' : 'poor'),
+        ].filter(Boolean).join('');
+      }
+      if (pills) {
         cwvRow.innerHTML = `<div class="flex flex-wrap gap-2 justify-center">${pills}</div>`;
         cwvRow.classList.remove('hidden');
       }
@@ -1072,6 +1384,7 @@ function renderFullAudit(data) {
     renderRecommendations(data.modules.recommendations.data);
   }
 
+  renderSiteIntro(data);
   renderComputedSections(data);
 
   // Update category tab counts once all cards are inserted
@@ -1136,7 +1449,7 @@ function wireActionButtons(data) {
       document.getElementById('modules').innerHTML = '';
       document.getElementById('scores').classList.add('hidden');
       reauditBtn.disabled = false;
-      reauditBtn.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Re-audit`;
+      reauditBtn.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Fresh Audit`;
       reauditBtn.dataset.wired = '';
       openAuditStream(data.domain, 0);
     });
@@ -1250,7 +1563,7 @@ function showEmbedCode(domain) {
         <div class="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Script embed (badge)</div>
         <div class="relative">
           <pre class="text-[10px] bg-slate-900 text-green-300 p-3 rounded-lg overflow-x-auto leading-relaxed">${esc(scriptTag)}</pre>
-          <button onclick="navigator.clipboard.writeText(${JSON.stringify(scriptTag)}).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',2000)})"
+          <button data-copy="${esc(scriptTag)}"
             class="absolute top-2 right-2 text-[10px] bg-slate-700 hover:bg-slate-600 text-slate-300 px-2 py-0.5 rounded transition-colors">Copy</button>
         </div>
       </div>
@@ -1268,25 +1581,37 @@ function updateModuleProgress(name, status, detail) {
   // These modules are rendered by renderComputedSections, not as streaming cards.
   // Without this guard, they'd get a permanent spinner that never resolves.
   if (name === 'recommendations' || name === 'keywords' || name === 'competitor_snapshot') return;
-  // Update progress status text
+  // Update progress status text with descriptive per-module message
   const statusEl = document.getElementById('progress-status');
   if (statusEl) {
+    const desc = MODULE_LOADING_MSG[name];
     const label = moduleName(name).replace(/^[^a-zA-Z]+/, '').trim();
-    statusEl.textContent = `Checking ${label}…`;
+    const msg = desc || `Checking ${label}…`;
+    statusEl.innerHTML = `<span class="module-checking"><span class="status-pulse inline-block mr-1.5"></span>${msg}</span>`;
   }
   if (document.getElementById(`module-${name}`)) return;
   const el = document.createElement('div');
   el.id = `module-${name}`;
   el.className = 'bg-white rounded-xl border border-slate-200 p-4 fade-in';
   el.dataset.category = MODULE_CATEGORY[name] || 'seo';
+  const srcInfo = MODULE_SOURCE[name];
+  const srcBadge = srcInfo ? `<span class="src-badge ${srcInfo.cls} hidden sm:inline-flex mr-1">${srcInfo.label}</span>` : '';
   el.innerHTML = `
     <div class="flex items-center gap-2">
-      <svg class="spinner w-4 h-4 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+      <svg class="spinner w-3.5 h-3.5 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"/>
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
       </svg>
-      <span class="font-medium text-sm capitalize">${moduleName(name)}</span>
-      <span class="module-elapsed text-xs font-mono text-blue-400 ml-auto" data-start-ms="${Date.now()}">0s</span>
+      <span class="font-medium text-sm text-slate-700">${moduleName(name)}</span>
+      <div class="flex items-center gap-1.5 ml-auto shrink-0">
+        ${srcBadge}
+        <span class="module-elapsed text-[11px] font-mono text-blue-400" data-start-ms="${Date.now()}">0s</span>
+      </div>
+    </div>
+    <div class="mt-3 space-y-2">
+      <div class="skeleton h-2 rounded-full" style="width:85%;opacity:0.5"></div>
+      <div class="skeleton h-2 rounded-full" style="width:65%;opacity:0.35"></div>
+      <div class="skeleton h-2 rounded-full" style="width:45%;opacity:0.25"></div>
     </div>`;
   el.style.order = cardOrder(el.id);
   document.getElementById('modules').appendChild(el);
@@ -1299,7 +1624,7 @@ function renderSection(d) {
   const statusEl = document.getElementById('progress-status');
   if (statusEl && d.module !== 'bot_blocked') {
     const label = moduleName(d.module).replace(/^[^a-zA-Z]+/, '').trim();
-    statusEl.textContent = `✓ ${label}`;
+    statusEl.innerHTML = `<span class="text-green-600 font-medium">✓ ${label}</span>`;
   }
 
   // ── Bot-challenge / WAF interstitial warning banner ───────────────────────
@@ -1328,6 +1653,14 @@ function renderSection(d) {
         <p class="text-amber-700 text-sm mt-0.5">${esc(note)}</p>
         <p class="text-amber-600 text-xs mt-1.5 font-mono bg-amber-100 rounded px-2 py-1 inline-block">${esc(reason)}</p>
       </div>`;
+    // Mark this audit as bot-blocked and remove any cards that already rendered
+    // with unreliable data (security_audit grades the error page headers, the others
+    // have no page content and produce empty/zero results).
+    window._auditBotBlocked = true;
+    ['security_audit','accessibility','schema_audit','on_page_seo','content_quality'].forEach(function(m) {
+      const card = document.getElementById('module-' + m);
+      if (card) card.remove();
+    });
     return;
   }
 
@@ -1336,6 +1669,17 @@ function renderSection(d) {
   // is_reliable=false → AI failed entirely; only generic template fallback returned.
   // In both cases the user sees nothing rather than a placeholder or stale guess.
   if (d.status === 'skipped' || d.data?.is_reliable === false) {
+    const existing = document.getElementById(`module-${d.module}`);
+    if (existing) existing.remove();
+    return;
+  }
+
+  // ── Suppress modules that produce garbage when the site blocks our fetch ──
+  // security_audit: grades the 403 error page headers, not the real site.
+  // accessibility, schema_audit, on_page_seo, content_quality: no page content
+  // to analyse — results are empty zeros that would mislead users.
+  const _BOT_SUPPRESS = new Set(['security_audit','accessibility','schema_audit','on_page_seo','content_quality']);
+  if (window._auditBotBlocked && _BOT_SUPPRESS.has(d.module)) {
     const existing = document.getElementById(`module-${d.module}`);
     if (existing) existing.remove();
     return;
@@ -1429,7 +1773,8 @@ function renderSection(d) {
     </div>`;
 
   } else if (d.module === 'schema_audit' && data) {
-    const missing = Object.entries(data.coverage || {}).filter(([, v]) => !v).map(([k]) => k);
+    const hasOrg = (data.coverage || {}).Organization === true;
+    const missing = Object.entries(data.coverage || {}).filter(([k, v]) => !v && !(k === 'LocalBusiness' && hasOrg)).map(([k]) => k);
     const present = Object.entries(data.coverage || {}).filter(([, v]) => v).map(([k]) => k);
     const scoreNum = data.score ?? 0;
     const scoreBar = scoreNum >= 80 ? 'bg-green-400' : scoreNum >= 50 ? 'bg-yellow-400' : 'bg-orange-400';
@@ -1599,7 +1944,7 @@ function renderSection(d) {
         ${overrideApplied ? 'bg-green-50 text-green-700 border-green-200' : 'bg-blue-50 text-blue-700 border-blue-200'}">
         ${esc(data.vertical)}${overrideApplied ? ' ✓' : ''}
       </span>
-      <button onclick="openVerticalCorrection('${esc(currentDomain)}', '${esc(data.vertical)}')"
+      <button data-action="correct-vertical" data-domain="${esc(currentDomain)}" data-vertical="${esc(data.vertical)}"
         class="text-[10px] text-slate-400 hover:text-orange-500 transition-colors" title="Correct vertical">&#9998;</button>
     ` : '';
 
@@ -2067,8 +2412,11 @@ function renderSection(d) {
 
   } else if (d.module === 'crux' && data) {
     if (!data.has_data) {
-      const msg = (data.issues ?? [])[0] ?? 'No CrUX data available';
-      detail = `<div class="mt-2 text-xs text-slate-400 italic">${esc(msg)}</div>`;
+      // No real Chrome user data (rate limit hit, or domain has no CrUX record).
+      // Remove the card completely — showing a "temporarily unavailable" message
+      // adds noise without any actionable information.
+      if (el.parentNode) el.remove();
+      return;
     } else {
       const perfScore = data.performance_score ?? 0;
       const perfColor = perfScore >= 80 ? 'bg-green-400' : perfScore >= 50 ? 'bg-yellow-400' : 'bg-orange-400';
@@ -2140,21 +2488,29 @@ function renderSection(d) {
   }
 
   // Collapsible card: header toggles the detail body
+  const srcMeta = MODULE_SOURCE[d.module];
+  const srcTag = srcMeta ? `<span class="src-badge ${srcMeta.cls} hidden sm:inline-flex">${srcMeta.label}</span>` : '';
   if (detail) {
     el.innerHTML = `
-      <div class="flex items-center gap-2 mb-1 cursor-pointer select-none card-collapse-toggle" onclick="toggleCardBody(this)">
+      <div class="flex items-center gap-2 mb-1 cursor-pointer select-none card-collapse-toggle" data-action="toggle-card">
         <span>${statusIcon}</span>
-        <span class="font-semibold text-base">${moduleName(d.module)}</span>
-        ${ms}
-        <svg class="chevron w-4 h-4 text-slate-300 ml-1 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        <span class="font-semibold text-sm">${moduleName(d.module)}</span>
+        <div class="flex items-center gap-1.5 ml-auto shrink-0">
+          ${srcTag}
+          ${ms}
+          <svg class="chevron w-4 h-4 text-slate-300 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </div>
       </div>
       <div class="card-body">${detail}</div>`;
   } else {
     el.innerHTML = `
       <div class="flex items-center gap-2 mb-1">
         <span>${statusIcon}</span>
-        <span class="font-semibold text-base">${moduleName(d.module)}</span>
-        ${ms}
+        <span class="font-semibold text-sm">${moduleName(d.module)}</span>
+        <div class="flex items-center gap-1.5 ml-auto shrink-0">
+          ${srcTag}
+          ${ms}
+        </div>
       </div>`;
   }
 
@@ -2239,7 +2595,8 @@ function wireCopyReport(data) {
       lines.push('── Accessibility ──');
       lines.push(`  WCAG score: ${access.score}/100`);
       if (access.desktop_cwv) lines.push(`  Desktop Perf: ${access.desktop_cwv.performance}/100  A11y: ${access.desktop_cwv.accessibility_score}/100`);
-      (access.issues ?? []).slice(0, 3).forEach(i => lines.push(`  • ${i}`));
+      // Derive failing checks from wcag_checks[] (issues[] is intentionally empty now — checklist is the single source)
+      (access.wcag_checks ?? []).filter(c => !c.passed).slice(0, 3).forEach(c => lines.push(`  • ${c.rule}${c.detail ? ' — ' + c.detail : ''}`));
       lines.push('');
     }
     const recs = data.modules?.recommendations?.data;
@@ -2304,25 +2661,36 @@ function renderRecommendations(recs) {
     return `<span class="text-xs ${map[n] || 'bg-slate-100 text-slate-600'} px-2 py-0.5 rounded-full border border-slate-200">${effortTime(n)}</span>`;
   };
   el.innerHTML = `
-    <div class="flex items-center justify-between mb-3">
-      <div class="font-semibold text-sm">📋 Top Recommendations</div>
-      <span class="text-xs text-slate-400" id="recs-done-count"></span>
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="font-bold text-sm text-slate-900">📋 Action Plan</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">Ranked by impact · check off as you fix</div>
+      </div>
+      <span class="text-xs font-medium text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full" id="recs-done-count"></span>
     </div>
-    <ol class="space-y-2.5" id="recs-list">
+    <ol class="space-y-2" id="recs-list">
       ${slice.map((r, i) => {
         const isDone = doneSet.has(r.title);
+        const impactDots = Array.from({length: 5}, (_, n) =>
+          `<span class="inline-block w-1.5 h-1.5 rounded-full ${n < r.impact ? (r.impact >= 4 ? 'bg-orange-500' : r.impact >= 3 ? 'bg-amber-500' : 'bg-blue-400') : 'bg-slate-200'}"></span>`
+        ).join('');
+        const rankColor = i === 0 ? 'bg-orange-500 text-white' : i <= 2 ? 'bg-amber-400 text-white' : 'bg-slate-100 text-slate-500';
         return `
-        <li class="text-sm border border-slate-100 rounded-xl p-3.5 transition-opacity ${isDone ? 'rec-done' : ''}" id="rec-item-${i}">
+        <li class="text-sm border border-slate-100 rounded-xl p-3.5 transition-all hover:border-slate-200 hover:shadow-sm ${isDone ? 'rec-done' : ''}" id="rec-item-${i}">
           <div class="flex items-start gap-3">
-            <input type="checkbox" class="rec-checkbox mt-0.5 w-4 h-4 shrink-0 rounded accent-green-600 cursor-pointer"
-              data-title="${esc(r.title)}" ${isDone ? 'checked' : ''}>
+            <div class="flex flex-col items-center gap-2 shrink-0">
+              <span class="w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0 ${rankColor}">${i + 1}</span>
+              <input type="checkbox" class="rec-checkbox w-4 h-4 rounded accent-green-600 cursor-pointer"
+                data-title="${esc(r.title)}" ${isDone ? 'checked' : ''}>
+            </div>
             <div class="flex-1 min-w-0">
-              <div class="font-medium rec-body">${esc(r.title)}</div>
+              <div class="font-semibold text-sm rec-body text-slate-800">${esc(r.title)}</div>
               <div class="text-xs text-slate-500 mt-0.5 leading-relaxed">${esc(r.why)}</div>
-              <div class="flex gap-2 mt-2 items-center flex-wrap">
-                <span class="text-xs ${r.impact >= 4 ? 'bg-orange-50 text-orange-700 border-orange-200' : r.impact >= 3 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-200'} px-2 py-0.5 rounded-full border font-medium">Impact ${r.impact}/5</span>
+              <div class="flex gap-2 mt-2.5 items-center flex-wrap">
+                <div class="flex items-center gap-1" title="Impact score ${r.impact}/5">${impactDots}</div>
+                <span class="text-[10px] font-medium text-slate-500">Impact ${r.impact}/5</span>
                 ${effortBadge(r.effort)}
-                <button class="text-xs text-blue-500 hover:text-blue-700 underline ml-auto transition-colors" data-action="toggle-fix" data-rec-index="${i}">How to fix ▾</button>
+                <button class="text-xs text-blue-500 hover:text-blue-700 ml-auto transition-colors font-medium" data-action="toggle-fix" data-rec-index="${i}">How to fix ▾</button>
               </div>
               <div class="hidden mt-3 what-to-do"></div>
             </div>
@@ -2483,8 +2851,8 @@ const chatInput = document.getElementById('chat-input');
 const chatSend  = document.getElementById('chat-send');
 const chatClear = document.getElementById('chat-clear');
 
-chatSend.addEventListener('click', sendChat);
-chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+if (chatSend)  chatSend.addEventListener('click', sendChat);
+if (chatInput) chatInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
 if (chatClear) chatClear.addEventListener('click', clearChat);
 
 document.querySelectorAll('.chat-suggestion').forEach(btn => {
@@ -2615,7 +2983,7 @@ function tipify(escapedHtml) {
   let result = escapedHtml;
   for (const [rawTerm, desc] of Object.entries(TECH_TIPS)) {
     const re = new RegExp(`\\b(${rawTerm})\\b`, 'gi');
-    result = result.replace(re, `<abbr class="tech-tip" title="${desc}">$1</abbr>`);
+    result = result.replace(re, `<abbr class="tech-tip" title="${desc.replace(/"/g, '&quot;')}">$1</abbr>`);
   }
   return result;
 }
@@ -3624,6 +3992,166 @@ function renderComputedSections(data) {
     `);
   }
 
+  // ── Plain-English Report Card ─────────────────────────────────────────────
+  (() => {
+    const aiInsights = mods.ai_content_insights?.data;
+    const recs = (mods.recommendations?.data ?? []).slice(0, 3);
+
+    // Business type detection
+    const AI_BUILDER_CMS = new Set(['Lovable', 'Bolt', 'v0 (Vercel)', 'Framer', 'Webflow']);
+    const hasOrgSchema = schemaData?.coverage?.Organization === true;
+    const hasLocalSchema = schemaData?.coverage?.LocalBusiness === true;
+    const isSaasCms = AI_BUILDER_CMS.has(techData?.tech_stack?.cms ?? '');
+    // Use schemas_found (full list) — coverage only tracks REQUIRED_SCHEMAS keys, not Corporation etc.
+    const schemasFound = schemaData?.schemas_found ?? [];
+    const hasCorporateSchema = hasOrgSchema ||
+      schemasFound.includes('Corporation') ||
+      schemasFound.includes('SoftwareApplication') ||
+      schemasFound.includes('WebApplication');
+    const vert = (geoData?.vertical || kwData?.vertical || '').toLowerCase();
+    const localVerts = ['restaurant','retail','healthcare','dental','legal','salon','fitness','hotel','plumber','electrician','contractor','real estate'];
+    // Wikipedia presence = established org, nearly never a local business
+    const isEstablishedOrg = authData?.wikipedia === true;
+    // High link count signals media/portal sites — local businesses rarely exceed 150 internal links.
+    // This overrides all other local signals (even localVerts) because city-guide/media sites
+    // cover restaurants and hotels but are not local businesses themselves.
+    const isHighLinkSite = (contentData?.internal_links ?? 0) >= 150;
+    const isLocal = !isHighLinkSite && (hasLocalSchema || (contentData?.has_address && !hasCorporateSchema && !isSaasCms && !isEstablishedOrg) || localVerts.some(v => vert.includes(v)));
+    const isSaas = hasCorporateSchema || isSaasCms || isEstablishedOrg || vert.includes('saas') || vert.includes('software');
+    const aiNiche = aiInsights?.business_context?.industry_niche;
+    const siteType = aiNiche || (isLocal ? 'Local Business' : isSaas ? 'Software / SaaS' : 'Business Website');
+
+    const hasAnySchema = (schemaData?.schemas_found?.length ?? 0) > 0;
+    const wc = contentData?.word_count ?? 0;
+    const likelySPA = wc < 50;
+    const sslData = mods.ssl_cert?.data;
+    const sslOk = sslData?.is_valid ?? sslData?.valid;
+    // Only fire SSL critical when we have a real issuer (e.g. "Let's Encrypt", "DigiCert").
+    // Placeholder strings like 'Unknown' / 'Unverified' mean retrieval failed — not a bad cert.
+    const SSL_PLACEHOLDER = new Set(['Unknown', 'Unverified', 'Verified (details unavailable)', '']);
+    const sslDefinitelyBad = sslOk === false && !!sslData?.issuer && !SSL_PLACEHOLDER.has(sslData.issuer);
+    const respMs = techData?.response_time_ms ?? 0;
+
+    // What's working
+    const positives = [];
+    const httpsOk = sslOk === true || techData?.checks?.find(c => c.name === 'HTTPS redirect' && c.passed);
+    if (httpsOk) positives.push('Secure connection (HTTPS) — browsers and visitors trust your site');
+    if (!contentData?.has_noindex) positives.push('Visible to search engines — pages are not blocked from indexing');
+    if (techData?.checks?.find(c => c.name === 'Mobile viewport meta')?.passed) positives.push('Mobile-friendly — works properly on phones and tablets');
+    if (respMs > 0 && respMs <= 1000) positives.push(`Fast server response (${respMs}ms) — good for rankings and user experience`);
+    if (wc >= 600) positives.push('Good content depth — enough text for search engines to understand your topic');
+    else if (wc >= 300) positives.push('Reasonable content length — some pages could use more detail');
+    if ((contentData?.h2_count ?? 0) >= 2) positives.push('Well-structured content — headings help search engines parse topics');
+    if ((contentData?.alt_coverage_pct ?? 0) >= 80 && (contentData?.image_count ?? 0) > 0) positives.push('Images have descriptive labels — helps accessibility and image search');
+    if (hasAnySchema) positives.push('Structured data present — AI engines can extract key business facts');
+    if (techData?.llms_txt_present) positives.push('llms.txt file found — AI search engines have a content index to work from');
+    if ((techData?.sitemap_url_count ?? 0) > 0) positives.push('XML sitemap found — search engines can map all your pages');
+    if (authData?.wikidata_id) positives.push('Wikidata entity — AI engines have structured knowledge about this business');
+    if (authData?.wikipedia) positives.push('Wikipedia presence — strong authority signal for AI citation');
+    if ((authData?.backlink_sample_count ?? 0) >= 10) positives.push(`${authData.backlink_sample_count}+ websites link here — builds domain authority`);
+    if (contentData?.has_email && contentData?.has_phone) positives.push('Contact information visible — builds visitor trust and local SEO signals');
+    else if (contentData?.has_email) positives.push('Email address visible on site — helps visitors and search engines find you');
+    if (techData?.checks?.find(c => c.name === 'Open Graph tags present')?.passed) positives.push('Social preview tags set — links look professional when shared on social media');
+
+    // Issues — by severity
+    const critical = [], important = [], minor = [];
+
+    if (contentData?.has_noindex) critical.push('Pages are hidden from all search engines — a "noindex" tag is blocking Google and AI crawlers');
+    if ((techData?.blocked_ai_bots?.length ?? 0) > 0) critical.push(`AI search engines are blocked (${(techData.blocked_ai_bots).join(', ')}) — they cannot crawl or cite this site`);
+    if (sslDefinitelyBad) critical.push('SSL certificate is invalid or expired — browsers warn visitors about security risks');
+    if (wc > 0 && wc < 50) critical.push(`Almost no readable text found (${wc} words) — the page likely requires JavaScript to load, which most search engines cannot see`);
+
+    if (!hasAnySchema) important.push('No structured data — search and AI engines cannot reliably extract business name, address, or services');
+    if (!techData?.llms_txt_present) important.push('No llms.txt file — AI engines like Perplexity and ChatGPT have no content index to reference');
+    if (wc >= 50 && wc < 300) important.push(`Very little content (${wc} words) — search engines need at least 300 words to understand what you offer`);
+    if (!authData?.wikidata_id) important.push('No Wikidata entry — AI engines are significantly less likely to cite businesses without a knowledge graph record');
+    if (techData?.checks?.find(c => c.name === 'Open Graph tags present' && !c.passed)) important.push('No social preview tags — shared links show no image or description on social media');
+    if ((techData?.sitemap_url_count ?? 0) === 0) important.push('No XML sitemap — search engines must discover pages by guessing, and may miss some');
+    if (wc >= 300 && wc < 600) important.push(`Content is thin (${wc} words) — aim for 600+ words on key pages to compete for rankings`);
+    if ((contentData?.h2_count ?? 0) === 0 && wc >= 100) important.push('No section headings — content lacks structure, making it harder for search engines to parse topics');
+
+    const imgMissing = (contentData?.image_count ?? 0) - (contentData?.images_with_alt ?? 0);
+    if (imgMissing > 0 && (contentData?.alt_coverage_pct ?? 100) < 80) minor.push(`${imgMissing} image${imgMissing > 1 ? 's' : ''} missing descriptive text — screen readers and image search cannot interpret these`);
+    if (isLocal && !contentData?.has_phone) minor.push('No phone number on homepage — local customers often look for this before visiting');
+    if (isLocal && !contentData?.has_address) minor.push('No address or location text — weakens local search and map listing signals');
+    if (!contentData?.lang_attr) minor.push('Language not declared on the page — browsers and search engines cannot auto-detect your target language');
+    if (respMs > 2000) minor.push(`Slow server response (${respMs}ms) — aim for under 800ms for better rankings and crawl efficiency`);
+
+    if (!positives.length && !critical.length && !important.length) return;
+
+    // Citation bar
+    const citePct = Math.round((geoData?.citation_rate ?? 0) * 100);
+    const citeLabel = citePct >= 70 ? 'High' : citePct >= 40 ? 'Moderate' : 'Low';
+    const citeBarColor = citePct >= 70 ? 'bg-green-500' : citePct >= 40 ? 'bg-amber-400' : 'bg-orange-500';
+    const citeLabelColor = citePct >= 70 ? 'text-green-700' : citePct >= 40 ? 'text-amber-600' : 'text-orange-600';
+
+    const posHtml = positives.slice(0, 7).map(p =>
+      `<li class="flex gap-2 items-start"><span class="shrink-0 text-green-500 mt-0.5 text-[13px]">✓</span><span>${esc(p)}</span></li>`
+    ).join('');
+
+    const issueHtml = [
+      ...critical.map(t => `<li class="flex gap-2 items-start"><span class="shrink-0 mt-0.5">🔴</span><span class="text-red-700 font-medium">${esc(t)}</span></li>`),
+      ...important.map(t => `<li class="flex gap-2 items-start"><span class="shrink-0 mt-0.5">🟡</span><span class="text-amber-700">${esc(t)}</span></li>`),
+      ...minor.map(t => `<li class="flex gap-2 items-start"><span class="shrink-0 mt-0.5">🟢</span><span class="text-slate-600">${esc(t)}</span></li>`),
+    ].join('');
+
+    const recHtml = recs.map((r, i) => `
+      <div class="flex gap-3 items-start py-2.5 ${i < recs.length - 1 ? 'border-b border-slate-100' : ''}">
+        <div class="w-5 h-5 shrink-0 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">${i + 1}</div>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs font-semibold text-slate-800 leading-snug">${esc(r.title)}</div>
+          <div class="text-[10px] text-slate-400 mt-0.5">${effortTime(r.effort)}</div>
+        </div>
+        <div class="shrink-0 text-[10px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">Impact ${r.impact}/5</div>
+      </div>`).join('');
+
+    const bizDesc = aiInsights?.business_context?.description;
+
+    addCard('plain-english-report', 'geo', `
+      <div class="flex items-start justify-between mb-3">
+        <div class="min-w-0">
+          <div class="font-semibold text-sm">📋 Plain-English Report</div>
+          ${bizDesc ? `<div class="text-xs text-slate-500 mt-0.5 leading-relaxed">${esc(bizDesc.slice(0, 160))}</div>` : ''}
+        </div>
+        <span class="text-[10px] text-slate-400 shrink-0 ml-3 mt-0.5 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200">${esc(siteType)}</span>
+      </div>
+
+      ${geoData?.citation_rate != null ? `
+      <div class="flex items-center gap-3 mb-4 p-2.5 bg-slate-50 rounded-lg">
+        <div class="text-xs text-slate-500 shrink-0">AI citation probability</div>
+        ${likelySPA
+          ? `<div class="flex-1 text-xs text-slate-400 italic">Requires JavaScript — not measurable for client-rendered pages</div>`
+          : `<div class="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden"><div class="h-full rounded-full ${citeBarColor} transition-all" style="width:${citePct}%"></div></div><div class="text-xs font-semibold ${citeLabelColor} shrink-0">${citeLabel} · ${citePct}%</div>`
+        }
+      </div>` : ''}
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        ${posHtml ? `<div>
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-green-700 mb-2">✅ What's working</div>
+          <ul class="space-y-1.5 text-xs text-slate-700">${posHtml}</ul>
+        </div>` : ''}
+        ${issueHtml ? `<div>
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">⚠ Needs attention</div>
+          <ul class="space-y-1.5 text-xs">${issueHtml}</ul>
+        </div>` : ''}
+      </div>
+
+      ${recHtml ? `<div class="mt-4 pt-4 border-t border-slate-100">
+        <div class="text-[10px] font-semibold uppercase tracking-wide text-blue-700 mb-1">🎯 Top actions</div>
+        <div>${recHtml}</div>
+      </div>` : ''}
+
+      <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+        <div class="text-[10px] text-slate-400">Made a change from the list above?</div>
+        <button data-action="reaudit"
+          class="text-[10px] font-semibold text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
+          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Run fresh audit
+        </button>
+      </div>
+    `);
+  })();
+
   // ── Competitor Comparison ─────────────────────────────────────────────────
   addCard('card-competitor', 'geo', `
     <div class="font-semibold text-sm mb-1">⚡ Compare vs Competitor</div>
@@ -3634,7 +4162,7 @@ function renderComputedSections(data) {
         <input id="competitor-input" type="text" placeholder="competitor.com"
           class="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-400">
       </div>
-      <button id="competitor-btn" onclick="runCompetitorComparison()"
+      <button id="competitor-btn" data-action="compare"
         class="shrink-0 text-sm bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white px-4 py-2 rounded-lg font-semibold transition-colors">
         Compare →
       </button>
@@ -3755,8 +4283,7 @@ async function runCompetitorComparison() {
         </div>
       </div>
       ${insight}
-      <button
-        onclick="navigator.clipboard.writeText(${JSON.stringify(shareText)}).then(()=>{this.textContent='✓ Copied!';setTimeout(()=>this.textContent='📋 Copy comparison',2500)})"
+      <button data-copy="${esc(shareText)}"
         class="mt-3 w-full text-xs bg-slate-900 hover:bg-slate-700 text-white py-2.5 rounded-lg font-semibold transition-colors">
         📋 Copy comparison
       </button>`;
@@ -3856,24 +4383,6 @@ function renderEeatBar(label, letter, score, tooltip) {
   </div>`;
 }
 
-function renderSparklineSvg(values, width = 140, height = 36) {
-  if (values.length < 2) return '';
-  const min = Math.min(...values, 0);
-  const max = Math.max(...values, 100);
-  const range = max - min || 1;
-  const pts = values.map((v, i) => {
-    const x = (i / (values.length - 1)) * width;
-    const y = height - ((v - min) / range) * height;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const last = values[values.length - 1];
-  const lastX = width;
-  const lastY = height - ((last - min) / range) * height;
-  return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="overflow-visible">
-    <polyline points="${pts}" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3" fill="#2563eb"/>
-  </svg>`;
-}
 
 // ── Vertical correction modal ─────────────────────────────────────────────────
 
@@ -3950,7 +4459,7 @@ async function submitVerticalCorrection() {
       notice.style.order = '5';
       notice.innerHTML = `
         <span>Vertical corrected to <strong>${esc(correctVertical)}</strong>. Re-audit to apply it.</span>
-        <button onclick="this.closest('div').remove(); startAudit('${esc(_vmDomain)}');"
+        <button data-action="reaudit-from-notice" data-domain="${esc(_vmDomain)}"
           class="shrink-0 bg-green-600 hover:bg-green-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition-colors">
           Re-audit now
         </button>`;
@@ -3969,6 +4478,22 @@ async function submitVerticalCorrection() {
 document.getElementById('vertical-modal')?.addEventListener('click', (e) => {
   if (e.target === document.getElementById('vertical-modal')) closeVerticalModal();
 });
+
+// ── Wire static HTML buttons that previously used inline onclick attributes ──
+// (inline onclick is blocked by Content-Security-Policy; event listeners are not)
+(function wireStaticButtons() {
+  const hiw = document.getElementById('hiw-modal');
+  const openHiw = () => hiw?.classList.remove('hidden');
+
+  document.getElementById('hiw-open-btn')?.addEventListener('click', openHiw);
+  document.getElementById('footer-hiw-btn')?.addEventListener('click', openHiw);
+  document.getElementById('footer-privacy-btn')?.addEventListener('click', () => {
+    openHiw();
+    document.querySelector('.hiw-tab[data-tab="privacy"]')?.click();
+  });
+  document.getElementById('vm-submit')?.addEventListener('click', submitVerticalCorrection);
+  document.getElementById('vm-cancel')?.addEventListener('click', closeVerticalModal);
+})();
 
 // ── Generic module feedback (thumbs-down) ────────────────────────────────────
 
