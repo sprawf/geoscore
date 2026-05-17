@@ -81,7 +81,13 @@ export async function upsertBusiness(business: Business, env: Env): Promise<numb
     )
     .first<{ id: number }>();
 
-  return result!.id;
+  if (result) return result.id;
+  // ON CONFLICT branch may not return a row on some D1 versions — fall back to SELECT
+  const fallback = await env.DB.prepare('SELECT id FROM businesses WHERE domain = ?')
+    .bind(business.domain ?? '')
+    .first<{ id: number }>();
+  if (!fallback) throw new Error('upsertBusiness: could not retrieve id after insert');
+  return fallback.id;
 }
 
 interface NominatimResult {

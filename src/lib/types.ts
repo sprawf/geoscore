@@ -8,8 +8,10 @@ export interface Env {
   SEARXNG_URL: string;
   DAILY_BROWSER_BUDGET_SECONDS: string;
   GOOGLE_API_KEY?: string;
+  PAGESPEED_API_KEY?: string;
   OPENPAGERANK_KEY?: string;
   GROQ_API_KEY?: string;
+  PERPLEXITY_API_KEY?: string;
 }
 
 export interface Business {

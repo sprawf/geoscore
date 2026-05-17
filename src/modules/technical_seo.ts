@@ -28,11 +28,19 @@ export interface TechnicalSeoResult {
   image_audit: ImageAudit;
   has_media_queries: boolean;
   ads_txt: boolean;
-  spf_record: string | null;
   unsafe_cross_origin_links: number;
   plaintext_emails: number;
   deprecated_tags: string[];
   top_keywords: Array<{ word: string; count: number }>;
+  http3_supported: boolean;
+  rss_feed_url: string | null;
+  pwa: {
+    has_manifest: boolean;
+    display: string | null;
+    has_icons: boolean;
+    name: string | null;
+  } | null;
+  ai_training_optout: boolean;
 }
 
 export interface PageMeta {
@@ -50,7 +58,6 @@ export interface PageMeta {
   twitter_image: string | null;
   favicon: string | null;
   lang: string | null;
-  social_profiles: string[];
   article_published_time: string | null;
   article_modified_time: string | null;
   article_author: string | null;
@@ -122,47 +129,6 @@ export interface ImageAudit {
 
 const AI_BOTS = ['GPTBot', 'ClaudeBot', 'PerplexityBot', 'Google-Extended', 'CCBot', 'anthropic-ai'];
 
-async function fetchSpfRecord(domain: string): Promise<string | null> {
-  try {
-    const res = await fetchWithTimeout(
-      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=TXT`,
-      { timeoutMs: 5000, headers: { Accept: 'application/dns-json' } }
-    );
-    if (!res.ok) return null;
-    const data = await res.json() as { Answer?: Array<{ data: string }> };
-    const txts = (data.Answer ?? []).map(r => r.data.replace(/^"|"$/g, '').replace(/"\s*"/g, ''));
-    return txts.find(t => t.startsWith('v=spf1')) ?? null;
-  } catch { return null; }
-}
-
-const SOCIAL_DOMAINS: Record<string, string> = {
-  'twitter.com': 'Twitter/X', 'x.com': 'Twitter/X',
-  'facebook.com': 'Facebook', 'fb.com': 'Facebook',
-  'linkedin.com': 'LinkedIn',
-  'instagram.com': 'Instagram',
-  'youtube.com': 'YouTube', 'youtu.be': 'YouTube',
-  'tiktok.com': 'TikTok',
-  'github.com': 'GitHub',
-  'pinterest.com': 'Pinterest',
-  'reddit.com': 'Reddit',
-};
-
-function extractSocialProfiles(html: string): string[] {
-  const profiles: string[] = [];
-  const seen = new Set<string>();
-  const regex = /href=["'](https?:\/\/(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})\/[^\s"'<>]{1,200})["']/gi;
-  let m;
-  while ((m = regex.exec(html)) !== null) {
-    const url = m[1];
-    const host = m[2].toLowerCase().replace(/^www\./, '');
-    const label = SOCIAL_DOMAINS[host];
-    if (label && !seen.has(label)) {
-      seen.add(label);
-      profiles.push(url);
-    }
-  }
-  return profiles;
-}
 
 function parseRobotsSummary(content: string): RobotsSummary {
   if (!content) return { user_agent_count: 0, disallow_count: 0, has_sitemap_ref: false, preview: '' };
@@ -588,8 +554,9 @@ function auditImages(html: string): ImageAudit {
     total++;
     const attrs = m[1] ?? '';
     const altMatch = /\balt\s*=\s*["']([^"']*)["']/i.exec(attrs);
-    // Require 2+ non-whitespace chars — aligns with content_quality threshold
-    if (!altMatch || altMatch[1].trim().length < 2) {
+    // Only flag images with NO alt attribute at all.
+    // alt="" is valid WCAG for decorative images — do not count as missing.
+    if (!altMatch) {
       missing_alt++;
       if (missing_alt_srcs.length < 20) {
         const src = (/\bsrc\s*=\s*["']([^"']{1,120})["']/i.exec(attrs) ?? [])[1] ?? '';
@@ -664,6 +631,7 @@ function extractTopKeywords(html: string): Array<{ word: string; count: number }
   return list.slice(0, 60).map(([word, count]) => ({ word, count }));
 }
 
+
 export async function runTechnicalSeo(
   domain: string,
   sharedHtml: string,
@@ -697,15 +665,19 @@ export async function runTechnicalSeo(
   checks.push({ name: 'HTTP redirects to HTTPS', passed: redirectsToHttps });
   if (!redirectsToHttps) issues.push('HTTP does not redirect to HTTPS — mixed-content risk');
 
-  const [robotsText, sitemapText, llmsTxt, adsText, spfRecord] = await Promise.allSettled([
+  // HTTP/3 detection — read Alt-Svc from shared headers (free — no extra fetch)
+  const altSvc = sharedHeaders.get('alt-svc') ?? '';
+  const http3Supported = altSvc.includes('h3=');
+
+  const [robotsText, sitemapText, llmsTxt, adsText] = await Promise.allSettled([
     fetchText(`${baseUrl}/robots.txt`, 8000).catch(() => ''),
     fetchText(`${baseUrl}/sitemap.xml`, 8000).catch(() => ''),
     fetchText(`${baseUrl}/llms.txt`, 5000).catch(() => ''),
     fetchText(`${baseUrl}/ads.txt`, 5000).catch(() => ''),
-    fetchSpfRecord(domain),
   ]);
 
-  checks.push({ name: 'HTTPS enabled', passed: true, detail: 'Domain resolves over HTTPS' });
+  const httpsEnabled = (sharedFinalUrl ?? '').startsWith('https://');
+  checks.push({ name: 'HTTPS enabled', passed: httpsEnabled, detail: httpsEnabled ? 'Domain resolves over HTTPS' : 'Domain is not serving over HTTPS' });
 
   const ttfbOk = response_time_ms < 2000;
   checks.push({ name: 'Response time < 2s', passed: ttfbOk, detail: `${response_time_ms}ms` });
@@ -713,10 +685,41 @@ export async function runTechnicalSeo(
 
   // Robots.txt
   const robotsContent = robotsText.status === 'fulfilled' ? robotsText.value : '';
-  blocked_ai_bots = AI_BOTS.filter((bot) => {
-    const regex = new RegExp(`User-agent:\\s*${bot}[\\s\\S]*?Disallow:\\s*/`, 'i');
-    return regex.test(robotsContent);
-  });
+  // Parse robots.txt block-by-block (blocks are separated by blank lines).
+  // The old single regex `User-agent: X [\s\S]*? Disallow: /` was crossing block
+  // boundaries and producing false positives when a bot had `Allow: /` but a
+  // later block (e.g. Amazonbot) had `Disallow: /`.
+  blocked_ai_bots = (() => {
+    const botLower = (b: string) => b.toLowerCase();
+    const blocks = robotsContent.split(/\n[ \t]*\n/);
+
+    // Build a map: agent_name_lower → lines_in_block[]
+    const agentBlocks = new Map<string, string[]>();
+    for (const block of blocks) {
+      const lines = block.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+      const agents = lines
+        .filter(l => /^user-agent:/i.test(l))
+        .map(l => l.replace(/^user-agent:\s*/i, '').trim().toLowerCase());
+      for (const agent of agents) {
+        // First specific rule wins (earlier blocks take priority)
+        if (!agentBlocks.has(agent)) agentBlocks.set(agent, lines);
+      }
+    }
+
+    const isBlockedByLines = (lines: string[]) => {
+      const disallowsRoot = lines.some(l => /^disallow:\s*\/?$/i.test(l));
+      const allowsRoot    = lines.some(l => /^allow:\s*\/\s*$/i.test(l));
+      return disallowsRoot && !allowsRoot;
+    };
+
+    return AI_BOTS.filter((bot) => {
+      const specific = agentBlocks.get(botLower(bot));
+      if (specific) return isBlockedByLines(specific);   // explicit rule for this bot
+      const wildcard = agentBlocks.get('*');
+      if (wildcard) return isBlockedByLines(wildcard);   // fall back to wildcard
+      return false;
+    });
+  })();
   checks.push({ name: 'Robots.txt present', passed: robotsContent.length > 0 });
   checks.push({
     name: 'AI crawlers not blocked',
@@ -761,7 +764,7 @@ export async function runTechnicalSeo(
   // Defaults
   let tech_stack: TechStack = { web_server: null, cdn: null, paas: null, backend_language: null, cms: null, ecommerce: null, frameworks: [], js_libraries: [], css_framework: null, analytics: [], tag_manager: [], heatmaps: [], ab_testing: [], chat: null, forms: [], video: [], maps: [], payments: [], email_marketing: [], monitoring: [], cookie_consent: null, versions: {} };
   let security_headers: SecurityHeaders = { hsts: false, xframe: false, xcontent: false, csp: false, referrer: false, permissions: false, score: 0 };
-  let page_meta: PageMeta = { title: null, description: null, og_title: null, og_description: null, og_image: null, og_type: null, og_site_name: null, canonical_url: null, twitter_card: null, twitter_title: null, twitter_description: null, twitter_image: null, favicon: null, lang: null, social_profiles: [], article_published_time: null, article_modified_time: null, article_author: null };
+  let page_meta: PageMeta = { title: null, description: null, og_title: null, og_description: null, og_image: null, og_type: null, og_site_name: null, canonical_url: null, twitter_card: null, twitter_title: null, twitter_description: null, twitter_image: null, favicon: null, lang: null, article_published_time: null, article_modified_time: null, article_author: null };
   let page_weight_kb = 0;
   let render_blocking_scripts = 0;
   let h1_tags: string[] = [];
@@ -774,6 +777,9 @@ export async function runTechnicalSeo(
   let plaintext_emails = 0;
   let deprecated_tags: string[] = [];
   let top_keywords: Array<{ word: string; count: number }> = [];
+  let rss_feed_url: string | null = null;
+  let pwa: TechnicalSeoResult['pwa'] = null;
+  let ai_training_optout = false;
 
   if (sharedHtml) {
     const html = sharedHtml;
@@ -781,10 +787,9 @@ export async function runTechnicalSeo(
     security_headers = detectSecurityHeaders(sharedHeaders);
     // Security header details are reported by the dedicated security_audit module — no duplicate here.
 
-    const contentLength = sharedHeaders.get('content-length');
-    page_weight_kb = contentLength
-      ? Math.round(parseInt(contentLength) / 1024)
-      : Math.round(html.length / 1024);
+    // Always use decompressed html.length for raw KB —
+    // content-length is the compressed wire size (used below for compression savings).
+    page_weight_kb = Math.round(html.length / 1024);
     tech_stack = detectTechStack(html, sharedHeaders);
 
     // Extract page meta for SERP / Social previews
@@ -805,7 +810,6 @@ export async function runTechnicalSeo(
       twitter_image:     html.match(/<meta[^>]*name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i)?.[1]?.trim() ?? null,
       favicon:           html.match(/<link[^>]*rel=["'](?:icon|shortcut icon)["'][^>]*href=["']([^"']+)["']/i)?.[1]?.trim() ?? null,
       lang:              langMatch?.[1]?.trim() ?? null,
-      social_profiles:   extractSocialProfiles(html),
       article_published_time: html.match(/<meta[^>]*property=["']article:published_time["'][^>]*content=["']([^"']+)["']/i)?.[1]?.trim() ?? null,
       article_modified_time:  html.match(/<meta[^>]*property=["']article:modified_time["'][^>]*content=["']([^"']+)["']/i)?.[1]?.trim() ?? null,
       article_author:         html.match(/<meta[^>]*property=["']article:author["'][^>]*content=["']([^"']+)["']/i)?.[1]?.trim() ?? null,
@@ -844,6 +848,11 @@ export async function runTechnicalSeo(
     const descOk = desc.length >= 100 && desc.length <= 170;
     checks.push({ name: 'Meta description (100-170 chars)', passed: descOk, detail: `${desc.length} chars` });
     if (!descOk) issues.push(`Meta description: ${desc.length} chars (target 100-170)`);
+    // Flag when title and description are identical — they serve different purposes and Google
+    // may rewrite the snippet if they match, weakening click-through rate.
+    if (title && desc && title.trim().toLowerCase() === desc.trim().toLowerCase()) {
+      issues.push('Title tag and meta description are identical — they should be distinct; use the title for the page topic and the description as a persuasive summary');
+    }
 
     const hasViewport = /<meta[^>]*name=["']viewport["']/i.test(html);
     checks.push({ name: 'Mobile viewport meta', passed: hasViewport });
@@ -860,7 +869,12 @@ export async function runTechnicalSeo(
     if (ogMissing.length > 0) issues.push(`Missing OG tags: ${ogMissing.join(', ')} — affects social sharing and AI citation`);
     else if (!page_meta.og_site_name) issues.push('og:site_name not set — social platforms may show full URL instead of brand name');
 
-    const h1count = (html.match(/<h1[^>]*>/gi) ?? []).length;
+    // Strip scripts/styles first — prevents false H1 matches from styled-components/emotion SSR
+    // injection artifacts (e.g. a <h1> element whose text content is ".css-1qggkls{outline:none;}")
+    const htmlNoScriptStyle = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '');
+    const h1count = (htmlNoScriptStyle.match(/<h1[^>]*>/gi) ?? []).length;
     checks.push({ name: 'Single H1 tag', passed: h1count === 1, detail: `${h1count} H1 tags found` });
     if (h1count !== 1) issues.push(`${h1count} H1 tags (should be exactly 1)`);
 
@@ -869,10 +883,12 @@ export async function runTechnicalSeo(
     if (!hasHreflang) issues.push('No hreflang tags — multilingual targeting not signalled');
 
     // ── New enrichment fields ─────────────────────────────────────────────────
-    h1_tags = extractTagText(html, 'h1');
-    h2_tags = extractTagText(html, 'h2');
+    h1_tags = extractTagText(htmlNoScriptStyle, 'h1');
+    h2_tags = extractTagText(htmlNoScriptStyle, 'h2');
 
-    dom_element_count = (html.match(/<[a-z][a-z0-9-]*[\s>/]/gi) ?? []).length;
+    const htmlForDomCount = htmlNoScriptStyle
+      .replace(/<svg[\s\S]*?<\/svg>/gi, '<svg/>'); // collapse SVGs to single tag
+    dom_element_count = (htmlForDomCount.match(/<[a-z][a-z0-9-]*[\s>\/]/gi) ?? []).length;
     checks.push({ name: 'DOM size ≤ 1500 nodes', passed: dom_element_count <= 1500, detail: `${dom_element_count.toLocaleString()} elements` });
     if (dom_element_count > 1500) issues.push(`DOM too large: ${dom_element_count.toLocaleString()} elements (target ≤ 1,500)`);
 
@@ -900,6 +916,12 @@ export async function runTechnicalSeo(
     checks.push({ name: 'HTML compression (GZIP/Brotli)', passed: compressionOk, detail: compressionDetail });
     if (!compressionOk) issues.push('No HTML compression — enable GZIP or Brotli to reduce transfer size');
 
+    checks.push({ name: 'HTTP/3 supported', passed: http3Supported, detail: http3Supported ? `Alt-Svc: ${altSvc.slice(0, 80)}` : 'No Alt-Svc header advertising h3' });
+
+    const pageWeightOk = page_weight_kb <= 500;
+    checks.push({ name: 'Page Weight', passed: pageWeightOk, detail: pageWeightOk ? `HTML: ${page_weight_kb} KB — document only, not including JS/CSS/images` : `HTML: ${page_weight_kb} KB — large document size` });
+    if (!pageWeightOk) issues.push(`HTML document is ${page_weight_kb} KB — large document size (excludes JS/CSS/images)`);
+
     image_audit = auditImages(html);
     checks.push({ name: 'Image alt attributes', passed: image_audit.missing_alt === 0, detail: `${image_audit.total - image_audit.missing_alt}/${image_audit.total} images have alt text` });
     // Alt text issues are reported by accessibility module (WCAG 1.1.1) — no duplicate here.
@@ -925,10 +947,37 @@ export async function runTechnicalSeo(
     if (deprecated_tags.length > 0) issues.push(`Deprecated HTML tags: <${deprecated_tags.join('>, <')}>`);
 
     top_keywords = extractTopKeywords(html);
+
+    // ── RSS / Atom feed detection ─────────────────────────────────────────────
+    const htmlFeedHref = html.match(/<link[^>]+type=["']application\/(?:rss|atom)\+xml["'][^>]+href=["']([^"']+)["']/i)?.[1]?.trim()
+      ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+type=["']application\/(?:rss|atom)\+xml["']/i)?.[1]?.trim()
+      ?? null;
+
+    // ── PWA manifest detection ────────────────────────────────────────────────
+    const manifestHref = html.match(/<link[^>]+rel=["']manifest["'][^>]+href=["']([^"']+)["']/i)?.[1]?.trim()
+      ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["']manifest["']/i)?.[1]?.trim()
+      ?? null;
+
+    // ── AI training opt-out detection ─────────────────────────────────────────
+    const robotsMetaContent = html.match(/<meta[^>]+name=["']robots["'][^>]*content=["']([^"']+)["']/gi) ?? [];
+    const robotsContentStr = robotsMetaContent.join(' ').toLowerCase();
+    const hasNoai = robotsContentStr.includes('noai') || robotsContentStr.includes('noimageai');
+    const hasCCBot = /<meta[^>]+name=["']CCBot["']/i.test(html);
+    const hasGPTBot = /<meta[^>]+name=["']GPTBot["']/i.test(html);
+    const hasAnthropicAi = /<meta[^>]+name=["']anthropic-ai["']/i.test(html);
+    ai_training_optout = hasNoai || hasCCBot || hasGPTBot || hasAnthropicAi;
+
+    // RSS: use HTML-declared feed link only — probe fetches removed to save subrequests.
+    rss_feed_url = htmlFeedHref;
+    // PWA: confirm manifest presence from HTML link tag; skip manifest fetch to save subrequest.
+    // display/icons/name stay null — "has_manifest: true" is the actionable signal.
+    pwa = manifestHref ? { has_manifest: true, display: null, has_icons: false, name: null } : null;
+
+    checks.push({ name: 'RSS / Atom feed', passed: !!rss_feed_url, detail: rss_feed_url ? `Feed found: ${rss_feed_url}` : 'No RSS or Atom feed detected — content publishing not discoverable by feed readers or AI crawlers' });
+    checks.push({ name: 'PWA manifest', passed: !!pwa?.has_manifest, detail: pwa?.has_manifest ? `display: ${pwa.display ?? 'not set'}, icons: ${pwa.has_icons ? 'yes' : 'none'}` : 'No web app manifest — site cannot be installed as a PWA' });
   }
 
   const ads_txt = adsText.status === 'fulfilled' && adsText.value.trim().length > 0;
-  const spf_record = spfRecord.status === 'fulfilled' ? spfRecord.value : null;
 
   const passed = checks.filter((c) => c.passed).length;
   const score = Math.round((passed / checks.length) * 100);
@@ -939,7 +988,11 @@ export async function runTechnicalSeo(
     response_time_ms, tech_stack, security_headers, page_meta,
     robots_summary, page_weight_kb, render_blocking_scripts,
     h1_tags, h2_tags, dom_element_count, compression,
-    image_audit, has_media_queries, ads_txt, spf_record,
+    image_audit, has_media_queries, ads_txt,
     unsafe_cross_origin_links, plaintext_emails, deprecated_tags, top_keywords,
+    http3_supported: http3Supported,
+    rss_feed_url,
+    pwa,
+    ai_training_optout,
   };
 }

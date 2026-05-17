@@ -5,7 +5,7 @@ export interface AuthorityResult {
   wayback_first_seen: string | null;
   wikipedia: boolean;
   wikidata_id: string | null;
-  backlink_sample_count: number;
+  indexed_page_count: number | null;
   registration_date: string | null;
   page_rank: number | null;
   issues: string[];
@@ -14,12 +14,12 @@ export interface AuthorityResult {
 export async function runAuthority(domain: string, businessName: string, openpagerank_key?: string): Promise<AuthorityResult> {
   const issues: string[] = [];
 
-  const [wayback, wikipedia, wikidata, rdap, commonCrawl, opr] = await Promise.allSettled([
+  // Common Crawl removed — saved 2 subrequests/invocation (stayed under CF Workers 50 limit).
+  const [wayback, wikipedia, wikidata, rdap, opr] = await Promise.allSettled([
     fetchWayback(domain),
     fetchWikipedia(businessName),
     fetchWikidata(businessName),
     fetchRdap(domain),
-    fetchCommonCrawl(domain),
     openpagerank_key ? fetchOpenPageRank(domain, openpagerank_key) : Promise.resolve(null),
   ]);
 
@@ -27,7 +27,6 @@ export async function runAuthority(domain: string, businessName: string, openpag
   const wikipediaPresent = wikipedia.status === 'fulfilled' ? wikipedia.value : false;
   const wikidataId = wikidata.status === 'fulfilled' ? wikidata.value : null;
   const regDate = rdap.status === 'fulfilled' ? rdap.value : null;
-  const backlinkCount = commonCrawl.status === 'fulfilled' ? commonCrawl.value : 0;
   const pageRank = opr.status === 'fulfilled' ? opr.value : null;
 
   const domainAgeYears = regDate
@@ -37,14 +36,13 @@ export async function runAuthority(domain: string, businessName: string, openpag
   if (!wikipediaPresent) issues.push('No Wikipedia page — low entity authority signal');
   if (!wikidataId) issues.push('No Wikidata entity — reduces LLM training-data inclusion likelihood');
   if (domainAgeYears !== null && domainAgeYears < 2) issues.push(`Domain only ${domainAgeYears} year(s) old — low trust signal`);
-  if (backlinkCount < 10) issues.push('Very few external backlinks found in Common Crawl sample');
 
   return {
     domain_age_years: domainAgeYears,
     wayback_first_seen: waybackDate,
     wikipedia: wikipediaPresent,
     wikidata_id: wikidataId,
-    backlink_sample_count: backlinkCount,
+    indexed_page_count: null,   // Common Crawl removed to save subrequests — null = not checked
     registration_date: regDate,
     page_rank: pageRank,
     issues,
@@ -87,15 +85,23 @@ function brandFromDomain(domain: string): string {
 async function fetchWikipedia(name: string): Promise<boolean> {
   // name may be the full domain (e.g. "hubspot.com"); derive the brand slug
   const brand = brandFromDomain(name);
-  // Use OpenSearch API — returns top matching titles
-  const url = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(brand)}&limit=5&format=json&redirects=resolve`;
+  // Normalize to alphanumeric — handles apostrophes ("mcdonald's" → "mcdonalds") and
+  // abbreviation redirects. Without redirects=resolve, OpenSearch returns the redirect
+  // page title itself (e.g. "Nytimes" for "nytimes.com") rather than its target
+  // ("The New York Times"), making the brand slug match far more likely to succeed.
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normBrand = norm(brand);
+  const url = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(brand)}&limit=5&format=json`;
   try {
     const res = await fetchWithTimeout(url, { timeoutMs: 6000 });
     if (!res.ok) return false;
     const data = await res.json() as [string, string[], string[], string[]];
     const titles: string[] = data[1] ?? [];
-    // Accept if any result title contains the brand name
-    return titles.some(t => t.toLowerCase().includes(brand));
+    return titles.some(t => {
+      const nt = norm(t);
+      // Accept exact match or "Brand Something" prefix — reject "XyzBrand" or "something brand"
+      return nt === normBrand || nt.startsWith(normBrand + ' ') || nt.startsWith(normBrand + '-');
+    });
   } catch { return false; }
 }
 
@@ -103,20 +109,31 @@ async function fetchWikidata(name: string): Promise<string | null> {
   // Use entity search API — much more reliable than exact SPARQL label match
   const brand = brandFromDomain(name);
   const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(brand)}&language=en&limit=5&format=json`;
+  // Normalize to alphanumeric — handles apostrophes ("McDonald's" → "mcdonalds")
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normBrand = norm(brand);
   try {
     const res = await fetchWithTimeout(url, { timeoutMs: 8000 });
     if (!res.ok) return null;
     const data = await res.json() as {
-      search?: Array<{ id: string; label?: string; description?: string }>;
+      search?: Array<{ id: string; label?: string; description?: string; match?: { type?: string } }>;
     };
-    // Prefer an entry whose label matches the brand and description suggests a company/org
-    const companyMatch = data.search?.find(e =>
-      (e.label ?? '').toLowerCase().includes(brand) &&
-      /company|corporation|software|platform|service|organization|business|startup|tech/i.test(e.description ?? '')
+    if (!data.search?.length) return null;
+    // Priority 1: label or alias match with a company-type description
+    const companyMatch = data.search.find(e => {
+      const nl = norm(e.label ?? '');
+      const labelMatches = nl === normBrand || nl.startsWith(normBrand + ' ') || nl.startsWith(normBrand + '-') || e.match?.type === 'alias';
+      return labelMatches && /company|corporation|software|platform|service|organization|business|startup|tech|restaurant|retail|chain|brand|media|entertainment|nonprofit|charity|foundation/i.test(e.description ?? '');
+    });
+    if (companyMatch) return companyMatch.id;
+    // Priority 2: first result matched via label or alias (covers abbreviation redirects
+    // like "nytimes" → Q9684 "The New York Times" matched via alias "nytimes")
+    const aliasOrLabelMatch = data.search.find(e =>
+      e.match?.type === 'label' || e.match?.type === 'alias'
     );
-    // Fall back to any result whose label starts with the brand
-    const looseMatch = data.search?.find(e => (e.label ?? '').toLowerCase().startsWith(brand));
-    return (companyMatch ?? looseMatch)?.id ?? null;
+    if (aliasOrLabelMatch) return aliasOrLabelMatch.id;
+    // Priority 3: any result whose normalized label starts with the brand slug
+    return data.search.find(e => norm(e.label ?? '').startsWith(normBrand))?.id ?? null;
   } catch { return null; }
 }
 
@@ -163,33 +180,3 @@ async function fetchRdap(domain: string): Promise<string | null> {
   return null;
 }
 
-async function fetchCommonCrawl(domain: string): Promise<number> {
-  // Count unique pages from this domain indexed across two CC crawls.
-  // `url=*.${domain}` is the CC CDX wildcard that returns all pages under the domain.
-  // We count unique full URLs (not just hostnames) to get a real indexed-page count.
-  // Two indices → up to 1000 URLs sampled; large sites saturate, small sites give real numbers.
-  // 5s timeout per index: if CC CDX doesn't respond in 5s it won't be useful anyway, and
-  // keeping it shorter prevents 2×8s = 16s worst-case authority module runtime.
-  const indices = ['CC-MAIN-2025-05', 'CC-MAIN-2024-51'];
-  const uniquePages = new Set<string>();
-
-  for (const index of indices) {
-    try {
-      const url = `https://index.commoncrawl.org/${index}-index?url=*.${domain}&output=json&limit=500`;
-      const res = await fetchWithTimeout(url, { timeoutMs: 5000 });
-      if (!res.ok) continue;
-      const text = await res.text();
-      for (const line of text.trim().split('\n')) {
-        if (!line) continue;
-        try {
-          const parsed = JSON.parse(line) as { url: string };
-          if (parsed.url) uniquePages.add(parsed.url);
-        } catch { /* skip malformed line */ }
-      }
-      // If first index returned good results, stop — avoids double-counting and saves time
-      if (uniquePages.size >= 200) break;
-    } catch { /* index unavailable — try next */ }
-  }
-
-  return uniquePages.size;
-}

@@ -25,7 +25,6 @@ export interface DnsRecords {
   aaaa: string[];
   mx: MxRecord[];
   ns: string[];
-  txt_count: number;
   has_ipv6: boolean;
 }
 
@@ -149,20 +148,20 @@ function extractGoogleFonts(href: string): string[] {
 export async function runSiteIntel(domain: string, html: string): Promise<SiteIntelResult> {
   const issues: string[] = [];
 
-  // ── DNS records in parallel (A + MX + NS only) ────────────────────────────
-  const [aData, mxData, nsData] = await Promise.all([
+  // ── DNS records in parallel (A + AAAA + MX + NS) ─────────────────────────
+  const [aData, aaaaData, mxData, nsData] = await Promise.all([
     dnsJson(domain, 'A'),
+    dnsJson(domain, 'AAAA'),
     dnsJson(domain, 'MX'),
     dnsJson(domain, 'NS'),
   ]);
 
-  const aRecords   = (aData.Answer ?? []).map(r => r.data.trim()).filter(Boolean);
-  const aaaaRecords: string[] = [];
-  const mxRecords  = (mxData.Answer ?? [])
+  const aRecords    = (aData.Answer    ?? []).map(r => r.data.trim()).filter(Boolean);
+  const aaaaRecords = (aaaaData.Answer ?? []).map(r => r.data.trim()).filter(Boolean);
+  const mxRecords   = (mxData.Answer   ?? [])
     .map(r => { const parts = r.data.split(' '); return { priority: Number(parts[0]) || 0, exchange: (parts[1] ?? '').replace(/\.$/, '') }; })
     .filter(r => r.exchange);
-  const nsRecords  = (nsData.Answer ?? []).map(r => r.data.replace(/\.$/, '').trim()).filter(Boolean);
-  const txtCount   = 0;
+  const nsRecords   = (nsData.Answer   ?? []).map(r => r.data.replace(/\.$/, '').trim()).filter(Boolean);
 
   if (aRecords.length === 0) issues.push('No A records found — domain may not be pointing to a server');
   if (mxRecords.length === 0) issues.push('No MX records — domain cannot receive email');
@@ -238,7 +237,7 @@ export async function runSiteIntel(domain: string, html: string): Promise<SiteIn
 
   const totalFontRequests = googleFonts.length + bunnyFonts.length + (adobeFonts ? 1 : 0) + customFonts.length;
   const systemOnly = totalFontRequests === 0;
-  if (systemOnly) issues.push('No web fonts detected — verify brand typography is intentionally using system fonts');
+  // "No web fonts" is surfaced by the dedicated Font Performance card — no duplicate issue here.
   const uniqueGoogleFonts = [...new Set(googleFonts)];
   const uniqueBunnyFonts  = [...new Set(bunnyFonts)];
   if (uniqueGoogleFonts.length > 4) issues.push(`${uniqueGoogleFonts.length} Google Fonts loaded — more than 4 font families harms page speed`);
@@ -249,11 +248,15 @@ export async function runSiteIntel(domain: string, html: string): Promise<SiteIn
     const scriptDomain = m[1].toLowerCase().replace(/^www\./, '');
     if (!scriptDomain.includes(domain.toLowerCase())) scriptDomains.add(scriptDomain);
   }
-  // Also check <link rel="preconnect|dns-prefetch"> as hints of third-party resources
+  // Also check <link rel="preconnect|dns-prefetch"> as hints of third-party resources.
+  // These are tracked separately so they don't inflate the third-party script count.
+  const preconnectHints = new Set<string>();
   for (const m of html.matchAll(/<link[^>]+(?:preconnect|dns-prefetch)[^>]*href=["']https?:\/\/([^/"']+)/gi)) {
     const d2 = m[1].toLowerCase().replace(/^www\./, '');
-    if (!d2.includes(domain.toLowerCase())) scriptDomains.add(d2);
+    if (!d2.includes(domain.toLowerCase()) && !scriptDomains.has(d2)) preconnectHints.add(d2);
   }
+  // Preconnect hints that are also confirmed script hosts are already in scriptDomains;
+  // hints-only domains are intentionally NOT added so they don't inflate the third-party count.
 
   const categories: Record<string, string[]> = {};
   for (const sd of scriptDomains) {
@@ -301,9 +304,9 @@ export async function runSiteIntel(domain: string, html: string): Promise<SiteIn
       // Framer: uses framer.com assets
       : allDomains.includes('framer.com') || htmlLower.includes('framer.com')
         ? 'Framer'
-      // Vercel: uses vercel.app or _vercel assets
-      : allDomains.includes('vercel.com') || nsStr.includes('vercel') ||
-        htmlLower.includes('/_next/') // Next.js on Vercel signature
+      // Vercel: uses vercel.app domain or vercel NS — do NOT infer from /_next/ paths,
+      // which are produced by any Next.js build regardless of where it is hosted.
+      : allDomains.includes('vercel.com') || nsStr.includes('vercel')
         ? 'Vercel'
       // Netlify: uses netlify.com assets
       : allDomains.includes('netlify.com') || nsStr.includes('netlify')
@@ -311,8 +314,9 @@ export async function runSiteIntel(domain: string, html: string): Promise<SiteIn
       // Ghost: uses ghost.io CDN
       : allDomains.includes('ghost.io') || htmlLower.includes('ghost.org')
         ? 'Ghost'
-      // GitHub Pages
-      : nsStr.includes('github') || allDomains.includes('github.io')
+      // GitHub Pages: NS hint, github.io asset domain, or IP reverse-DNS → cdn-*.github.com
+      : nsStr.includes('github') || allDomains.includes('github.io') ||
+        hosting?.hostname?.includes('.github.com')
         ? 'GitHub Pages'
       : null;
 
@@ -326,7 +330,7 @@ export async function runSiteIntel(domain: string, html: string): Promise<SiteIn
   return {
     ip: primaryIp,
     hosting,
-    dns: { a: aRecords, aaaa: aaaaRecords, mx: mxRecords, ns: nsRecords, txt_count: txtCount, has_ipv6: aaaaRecords.length > 0 },
+    dns: { a: aRecords, aaaa: aaaaRecords, mx: mxRecords, ns: nsRecords, has_ipv6: aaaaRecords.length > 0 },
     fonts: { google_fonts: uniqueGoogleFonts, adobe_fonts: adobeFonts, bunny_fonts: uniqueBunnyFonts, custom_fonts: customFonts, system_only: systemOnly, total_font_requests: totalFontRequests },
     carbon,
     third_party,

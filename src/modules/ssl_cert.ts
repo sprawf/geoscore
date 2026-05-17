@@ -4,7 +4,7 @@ export interface SslCertResult {
   issuer: string;
   valid_from: string;
   valid_to: string;
-  days_remaining: number;
+  days_remaining: number | null;
   is_valid: boolean;
   is_expiring_soon: boolean;
   issues: string[];
@@ -138,14 +138,12 @@ export async function runSslCert(domain: string): Promise<SslCertResult> {
   if (crtSh) return crtSh;
 
   // Both cert sources failed — use HTTPS probe for validity, flag details as unavailable.
-  // days_remaining = -1 is the sentinel meaning "valid but expiry unknown"
-  // (0 would be misread as "expiring today" in the UI).
   if (httpsReachable) {
     return {
       issuer: 'Verified (details unavailable)',
       valid_from: '',
       valid_to: '',
-      days_remaining: -1,
+      days_remaining: null,
       is_valid: true,
       is_expiring_soon: false,
       issues: [],
@@ -160,7 +158,7 @@ export async function runSslCert(domain: string): Promise<SslCertResult> {
     issuer: 'Unverified',
     valid_from: '',
     valid_to: '',
-    days_remaining: -1,
+    days_remaining: null,
     is_valid: true,
     is_expiring_soon: false,
     issues: ['SSL could not be verified — site may block automated checks'],

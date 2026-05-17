@@ -1,7 +1,7 @@
 import type { Env } from './types';
 
-// 10 full audits per IP per hour; 120 searches per IP per minute
-const AUDIT_LIMIT = 10;
+// 50 full audits per IP per hour during active development; 120 searches per IP per minute
+const AUDIT_LIMIT = 50;
 const SEARCH_LIMIT = 120;
 
 function hourKey(ip: string) {

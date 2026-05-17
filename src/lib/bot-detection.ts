@@ -47,17 +47,20 @@ const CHALLENGE_URL_RE =
  * <title> patterns that unambiguously identify WAF challenge pages.
  *
  * Real examples:
- *   "Captcha | Bayut"              — DataDome / Bayut
- *   "Just a moment..."             — Cloudflare
- *   "Attention Required!"          — Cloudflare
- *   "Access Denied"                — generic WAF
- *   "Security Check"               — generic
+ *   "Captcha | Bayut"                          — DataDome / Bayut
+ *   "Just a moment..."                         — Cloudflare
+ *   "Attention Required!"                      — Cloudflare
+ *   "Access Denied"                            — generic WAF
+ *   "Security Check"                           — generic
  *   "DDoS protection by Cloudflare"
  *   "Please wait... | Checking..."
  *   "Are You Human?"
+ *   "526 Invalid SSL certificate | Cloudflare" — Cloudflare origin SSL error
+ *   "520 Web server returns an unknown error"  — Cloudflare 5xx series
+ *   "521 Web server is down | Cloudflare"
  */
 const CHALLENGE_TITLE_RE =
-  /\b(?:captcha|attention required|just a moment|access denied|security check|ddos protection|bot check|are you human|verify you are human|human verification|you(?:'ve| have) been blocked|please wait|checking your browser|ray id|almost there)\b/i;
+  /\b(?:captcha|attention required|just a moment|access denied|security check|ddos protection|bot check|are you human|verify you are human|human verification|you(?:'ve| have) been blocked|please wait|checking your browser|ray id|almost there|invalid ssl certificate|ssl handshake failed|web server is down|origin is unreachable|error 52[0-9]|cloudflare error)\b/i;
 
 /**
  * Visible-text keyword patterns present in WAF / bot-challenge page bodies.
@@ -65,9 +68,13 @@ const CHALLENGE_TITLE_RE =
  *
  * Uses a non-backtracking pattern (`[^.]{0,40}` instead of `.*?`) to stay
  * efficient on large pages and avoid ReDoS.
+ *
+ * Cloudflare error pages (520–530) always contain "Ray ID:" in the footer.
+ * The 526 page body reads "Invalid SSL certificate" prominently.
+ * These patterns catch Cloudflare origin errors that serve no real content.
  */
 const CHALLENGE_CONTENT_RE =
-  /\b(?:captcha|captcha\s+challenge|security\s+check|enable\s+javascript|javascript[^.]{0,40}disabl|security\s+service|checking\s+your\s+browser|attention\s+required|just\s+a\s+moment|access\s+denied|please\s+enable|ddos\s+protection|human\s+verification|are\s+you[^.]{0,20}human|verify[^.]{0,20}human|verify\s+you\s+are\s+human|blocked[^.]{0,20}request|unsupported\s+client|please\s+update\s+your\s+browser|update\s+your\s+browser|browser\s+not\s+supported|browser\s+is\s+not\s+supported|this\s+browser[^.]{0,20}not\s+supported|your\s+browser[^.]{0,20}not\s+supported|not\s+supported[^.]{0,20}browser)\b/i;
+  /\b(?:captcha|captcha\s+challenge|security\s+check|enable\s+javascript|javascript[^.]{0,40}disabl|security\s+service|checking\s+your\s+browser|attention\s+required|just\s+a\s+moment|access\s+denied|please\s+enable|ddos\s+protection|human\s+verification|are\s+you[^.]{0,20}human|verify[^.]{0,20}human|verify\s+you\s+are\s+human|blocked[^.]{0,20}request|unsupported\s+client|please\s+update\s+your\s+browser|update\s+your\s+browser|browser\s+not\s+supported|browser\s+is\s+not\s+supported|this\s+browser[^.]{0,20}not\s+supported|your\s+browser[^.]{0,20}not\s+supported|not\s+supported[^.]{0,20}browser|ray\s+id\b|invalid\s+ssl\s+certificate|ssl\s+handshake\s+failed|web\s+server\s+(?:is\s+)?down|origin\s+(?:is\s+)?unreachable|error\s+52[0-9])\b/i;
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
@@ -91,11 +98,19 @@ export function detectBotChallenge(
   statusCode?: number,
 ): BotChallengeResult {
 
-  // 1. HTTP 403 — explicit block; no content analysis needed
+  // 1. HTTP 403 — explicit block; no content analysis needed.
+  //    Cloudflare 5xx error codes (520–530) are also all-Cloudflare error pages
+  //    with no real business content (no schema, no text, no usable signals).
   if (statusCode === 403) {
     return {
       isChallenge: true,
       reason: 'HTTP 403 Forbidden — request blocked by server or WAF',
+    };
+  }
+  if (statusCode !== undefined && statusCode >= 520 && statusCode <= 530) {
+    return {
+      isChallenge: true,
+      reason: `Cloudflare origin error HTTP ${statusCode} — no real content served`,
     };
   }
 

@@ -135,6 +135,11 @@ export async function runCrux(domain: string, env: Env): Promise<CruxResult> {
       issues,
     };
   } catch (err) {
-    return { ...EMPTY, issues: [`CrUX error: ${(err as Error).message}`] };
+    const msg = (err as Error).message ?? '';
+    // Sanitize internal infrastructure errors — don't expose Cloudflare Worker limits to users
+    const userMsg = msg.includes('subrequest') || msg.includes('Worker invocation')
+      ? 'Performance data temporarily unavailable — CrUX request limit reached'
+      : `CrUX data unavailable: ${msg.slice(0, 80)}`;
+    return { ...EMPTY, issues: [userMsg] };
   }
 }

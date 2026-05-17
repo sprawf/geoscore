@@ -228,7 +228,8 @@ function extractJsonLd(html: string): string[] {
   // Secondary: scan inline <script> and JSON blobs for embedded schema objects.
   // Many React/Next.js apps serialize schema into __NEXT_DATA__ or window.__SCHEMA__ etc.
   // Pattern: finds any JSON object that has both @context (schema.org) and @type at the top level.
-  if (blocks.length === 0) {
+  // Runs unconditionally so it supplements (not replaces) primary ld+json blocks.
+  {
     const schemaPattern = /\{"@context"\s*:\s*"https?:\/\/(?:www\.)?schema\.org[^"]*"[^{}]*"@type"\s*:\s*"[^"]+"/g;
     // Extract up to 5 candidate objects by tracking brace depth
     let pm;
@@ -245,7 +246,7 @@ function extractJsonLd(html: string): string[] {
         const candidate = html.slice(start, i + 1);
         try {
           JSON.parse(candidate); // validate it's real JSON
-          blocks.push(candidate);
+          if (!blocks.includes(candidate)) blocks.push(candidate); // deduplicate
         } catch { /* not valid JSON — skip */ }
       }
     }

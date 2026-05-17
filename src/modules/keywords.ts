@@ -1,6 +1,6 @@
 import type { Env } from '../lib/types';
 import { callLlm } from '../lib/llm';
-import { detectVertical, detectLocation } from './geo_predicted';
+import { detectVertical, detectLocation, guessVerticalFromDomain, detectVerticalFromSchema } from './geo_predicted';
 import { isBotChallengePage } from '../lib/bot-detection';
 
 export interface KeywordResult {
@@ -36,20 +36,8 @@ function hasGeoPotential(kw: string): boolean {
   return /\b(best|top|how|what|which|why|guide|tips|review|compare|vs|recommend|alternative)\b/i.test(kw);
 }
 
-async function fetchAutocomplete(query: string): Promise<string[]> {
-  try {
-    const url = `https://suggestqueries.google.com/complete/search?q=${encodeURIComponent(query)}&client=firefox&hl=en`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return [];
-    const data = await res.json() as [string, string[]];
-    return Array.isArray(data[1]) ? data[1].slice(0, 8) : [];
-  } catch {
-    return [];
-  }
-}
+// Google suggestqueries removed — saved 8 subrequests per audit.
+// AI-generated keywords (via Groq/CF AI) provide equivalent coverage with zero extra fetches.
 
 export async function runKeywords(
   domain: string,
@@ -90,11 +78,20 @@ export async function runKeywords(
     metaSignals = domain;
   }
 
-  const vertical = verticalOverride ?? detectVertical(pageContent);
+  // Schema @type takes priority: it's the site owner's explicit declaration of business type.
+  let vertical = verticalOverride ?? detectVerticalFromSchema(sharedHtml) ?? detectVertical(pageContent);
+  // When the regex can't classify (returns 'general') — e.g. bot-blocked sites where
+  // pageContent = "Business at domain.com" — try domain-name guessing as a fallback.
+  // This ensures bayut.com → real_estate, airbnb.com → hotel, etc. so that seed queries
+  // and keyword templates are at least topically relevant.
+  if (vertical === 'general') {
+    const domainGuess = guessVerticalFromDomain(domain);
+    if (domainGuess) vertical = domainGuess;
+  }
   // Location is only meaningful for local-service verticals.
   // Global SaaS/tech/finance/ecommerce sites mention cities in blog posts and testimonials,
   // so detectLocation produces false positives (e.g. "London" for moz.com).
-  const LOCAL_VERTICALS = new Set(['dental','legal','fitness','real_estate','hotel','restaurant','food_delivery','medical']);
+  const LOCAL_VERTICALS = new Set(['dental','legal','fitness','real_estate','hotel','restaurant','food_delivery','medical','home_services']);
   const location = locationOverride ?? (LOCAL_VERTICALS.has(vertical) ? detectLocation(pageContent) : 'your area');
   const locationStr = location === 'your area' ? '' : location;
 
@@ -118,12 +115,8 @@ export async function runKeywords(
     ];
   }
 
-  // Fetch autocomplete for all seeds in parallel
-  const autocompleteResults = await Promise.all(seeds.map(fetchAutocomplete));
-
-  // Flatten, deduplicate
+  // Build raw keyword set from AI seeds — no external autocomplete fetches needed
   const raw = new Set<string>();
-  autocompleteResults.flat().forEach(kw => raw.add(kw.toLowerCase().trim()));
   seeds.forEach(s => raw.add(s.toLowerCase().trim()));
 
   // Classify each keyword
@@ -160,8 +153,9 @@ export async function runKeywords(
     seed_queries: seeds,
     vertical,
     location,
-    // Only reliable when AI generated seeds — bigram fallback produces generic/location-distorted results
-    is_reliable: aiSeedsAvailable,
+    // Reliable only when: (a) AI generated seeds AND (b) we had real page HTML to work from.
+    // Domain-name-only inference (sharedHtml empty) produces hallucinated topics — suppress it.
+    is_reliable: aiSeedsAvailable && !!sharedHtml,
   };
 }
 
@@ -184,28 +178,7 @@ const SEED_STOP = new Set([
   'const','typeof','undefined','false','null','true','https','http','www',
 ]);
 
-/**
- * Guess a vertical from the domain name when page content is unavailable
- * (e.g. site is bot-blocked and returns a CAPTCHA challenge page).
- */
-function guessVerticalFromDomain(domain: string): string | null {
-  const d = domain.toLowerCase();
-  if (/booking|hotel|hostel|airbnb|agoda|expedia|trivago|hotels\.|marriott|hilton|hyatt/.test(d)) return 'hotel';
-  if (/restaurant|tripadvisor|yelp|zomato|opentable|doordash|ubereats|grubhub|deliveroo/.test(d)) return 'restaurant';
-  if (/timeout|eventbrite|ticketmaster|concert|venue/.test(d)) return 'restaurant';
-  if (/rightmove|zillow|realtor|realestate|property|estate/.test(d)) return 'real_estate';
-  if (/gym|fitness|yoga|sport|crossfit/.test(d)) return 'fitness';
-  if (/dental|dentist|teeth|orthodon/.test(d)) return 'dental';
-  if (/clinic|hospital|health|medical|pharma|doctor/.test(d)) return 'medical';
-  if (/legal|lawyer|attorney|solicitor|lawfirm/.test(d)) return 'legal';
-  if (/amazon|ebay|shopify|etsy|ecommerce|shop\./.test(d)) return 'ecommerce';
-  if (/bank|finance|invest|trading|crypto|forex/.test(d)) return 'finance';
-  if (/saas|software|github|gitlab|tech\./.test(d)) return 'tech';
-  if (/food|meal|delivery|halal|pizza|sushi|burger/.test(d)) return 'food_delivery';
-  if (/learn|course|academy|school|tutor|edu|class|lingo|vocab|fluent|glosso/.test(d)) return 'education';
-  return null;
-}
-
+// guessVerticalFromDomain is imported from geo_predicted (single source of truth)
 // isBotChallengePage is imported from ../lib/bot-detection (single source of truth)
 
 /**

@@ -36,8 +36,14 @@ document.querySelectorAll('.hiw-tab').forEach(tab => {
 // are initialised before startAudit() runs (avoids TDZ ReferenceErrors).
 (function () {
   const params = new URLSearchParams(location.search);
-  const d = params.get('d') || params.get('domain');
-  if (d) setTimeout(() => { const si = document.getElementById('search-input'); if (si) si.value = d; startAudit(d); }, 0);
+  const d      = params.get('d') || params.get('domain');
+  const share  = params.get('share');
+  if (share) {
+    // Shareable report view — load cached audit without re-running
+    setTimeout(() => loadSharedAudit(share), 0);
+  } else if (d) {
+    setTimeout(() => { const si = document.getElementById('search-input'); if (si) si.value = d; startAudit(d); }, 0);
+  }
 })();
 
 // ── Social proof: fetch audit count + recently scanned feed ──────────────
@@ -57,7 +63,8 @@ const PROGRESS_MODULES = new Set([
   'technical_seo','schema_audit','content_quality','authority','geo_predicted',
   'keywords','on_page_seo','off_page_seo','site_intel',
   'redirect_chain','accessibility','security_audit','ssl_cert',
-  'domain_intel','crux',
+  'domain_intel','crux','robots_sitemap','broken_links','mobile_audit',
+  // 'lighthouse' intentionally excluded — runs via /api/lighthouse after complete event
 ]);
 const TOTAL_MODULES = PROGRESS_MODULES.size;
 let modulesComplete = 0;
@@ -82,6 +89,7 @@ const MODULE_LOADING_MSG = {
   domain_intel:    'Querying RDAP WHOIS & Cloudflare DoH DNS…',
   crux:            'Fetching 28-day real Chrome user data from Google CrUX…',
   keywords:        'Generating AI-powered keyword suggestions…',
+  lighthouse:      'Running Lighthouse performance audit via PageSpeed Insights API…',
 };
 
 const MODULE_CATEGORY = {
@@ -91,7 +99,7 @@ const MODULE_CATEGORY = {
   security_audit: 'seo', ssl_cert: 'seo',
   authority: 'authority', off_page_seo: 'authority',
   site_intel: 'site_intel', redirect_chain: 'site_intel',
-  domain_intel: 'seo', crux: 'seo',
+  domain_intel: 'seo', crux: 'seo', lighthouse: 'seo',
 };
 
 // Data source attribution — shown as trust badge on each module card header
@@ -111,6 +119,9 @@ const MODULE_SOURCE = {
   domain_intel:    { label: 'RDAP · Cloudflare DoH',         cls: 'src-blue' },
   crux:            { label: 'Google CrUX API',               cls: 'src-green' },
   keywords:        { label: 'Autocomplete · Workers AI',     cls: 'src-purple' },
+  robots_sitemap:  { label: 'Live fetch · XML parse',         cls: 'src-blue' },
+  broken_links:    { label: 'Live HTTP checks',               cls: 'src-blue' },
+  mobile_audit:    { label: 'HTML parse',                     cls: 'src-slate' },
 };
 
 // Display order: most verifiable data first → least certain last.
@@ -125,7 +136,7 @@ const MODULE_SOURCE = {
 const CARD_ORDER = {
   // ── Summary (always pinned at top) ──────────────────────────────────
   'plain-english-report':        3,
-  'priority-card':               5,
+
   'card-site-intro':             7,   // Website identity brief (generated from factual signals)
 
   // ── Tier 1: Direct network measurements (ground truth) ──────────────
@@ -182,8 +193,15 @@ const CARD_ORDER = {
   'card-keyword-research':       97,   // AI keyword suggestions
   'module-ai_content_insights':  98,   // AI content insights
 
+  // ── Tier 5b: Crawlability, images & mobile ──────────────────────────
+  'module-robots_sitemap':       74,   // robots.txt + sitemap check
+  'module-broken_links':         81,   // Broken link checker
+  'module-mobile_audit':         83,   // Mobile readiness check
+
   // ── Tier 7: Tools & actions ──────────────────────────────────────────
   'card-llms-gen':              105,   // llms.txt file generator
+  'card-schema-gen':            106,   // JSON-LD schema generator
+  'card-geo-probe':              99,   // AI entity visibility probe
   'card-keywords-cloud':        110,   // Page keyword frequency cloud
   'card-competitor':            115,   // Competitor comparison
   'recs-section':               120,   // Full prioritised recommendation list
@@ -255,7 +273,7 @@ function tickProgress() {
   }
 }
 let sessionId = localStorage.getItem('session_id') || crypto.randomUUID();
-localStorage.setItem('session_id', sessionId);
+try { localStorage.setItem('session_id', sessionId); } catch { /* Safari private mode */ }
 
 // ── Semantic Search (Transformers.js v3 + WebGPU) ─────────────────────────
 // BGE-Small-EN-v1.5 ONNX (33 MB) runs on WebGPU via ONNX Runtime Web.
@@ -543,9 +561,6 @@ document.addEventListener('click', (e) => {
   const vc = e.target.closest('[data-action="correct-vertical"]');
   if (vc) { openVerticalCorrection(vc.dataset.domain, vc.dataset.vertical); return; }
 
-  // Run fresh audit — replaces onclick="document.getElementById('reaudit-btn').click()"
-  const reauditAction = e.target.closest('[data-action="reaudit"]');
-  if (reauditAction) { document.getElementById('reaudit-btn')?.click(); return; }
 
   // Re-audit from vertical-correction notice — replaces inline startAudit onclick
   const reauditNotice = e.target.closest('[data-action="reaudit-from-notice"]');
@@ -570,6 +585,48 @@ document.addEventListener('click', (e) => {
   }
   if (e.target.id === 'llms-view-btn') {
     handleLlmsView(e.target);
+    return;
+  }
+
+  // Schema JSON-LD generator
+  if (e.target.id === 'schema-gen-btn') { handleSchemaGen(e.target); return; }
+  if (e.target.id === 'schema-copy-btn') {
+    const text = document.getElementById('schema-gen-text')?.textContent ?? '';
+    navigator.clipboard.writeText(text).then(() => {
+      e.target.textContent = '✓ Copied!';
+      setTimeout(() => { e.target.textContent = 'Copy'; }, 2000);
+    });
+    return;
+  }
+
+  // GEO entity probe
+  if (e.target.id === 'geo-probe-btn') { handleGeoProbe(e.target); return; }
+
+  // OG image download
+  if (e.target.id === 'og-download-btn') {
+    downloadOgImage(e.target);
+    return;
+  }
+
+  // SERP snippet optimiser
+  if (e.target.id === 'serp-gen-btn') {
+    handleSerpGen(e.target);
+    return;
+  }
+  if (e.target.id === 'serp-copy-title-btn') {
+    const text = document.getElementById('serp-gen-title')?.textContent ?? '';
+    navigator.clipboard.writeText(text).then(() => {
+      e.target.textContent = '✓ Copied!';
+      setTimeout(() => { e.target.textContent = 'Copy title'; }, 2000);
+    });
+    return;
+  }
+  if (e.target.id === 'serp-copy-desc-btn') {
+    const text = document.getElementById('serp-gen-desc')?.textContent ?? '';
+    navigator.clipboard.writeText(text).then(() => {
+      e.target.textContent = '✓ Copied!';
+      setTimeout(() => { e.target.textContent = 'Copy description'; }, 2000);
+    });
     return;
   }
 });
@@ -618,7 +675,8 @@ async function handleLlmsGen(btn) {
         try { raw += JSON.parse(payload).response ?? ''; } catch { /* skip */ }
       }
       textEl.textContent = raw;
-      output.querySelector('pre').scrollTop = 9999;
+      const _pre = output.querySelector('pre');
+      if (_pre) _pre.scrollTop = 9999;
     }
 
     clearInterval(genTimer);
@@ -668,6 +726,926 @@ async function handleLlmsView(btn) {
     textEl.textContent = `Could not fetch llms.txt: ${err.message}`;
     btn.dataset.showing = '0';
     btn.textContent = '👁 View existing';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Shareable report loader ────────────────────────────────────────────────
+
+async function loadSharedAudit(domain) {
+  const si = document.getElementById('search-input');
+  if (si) si.value = domain;
+
+  // Show a loading indicator
+  const resultsEl = document.getElementById('results');
+  if (resultsEl) resultsEl.classList.remove('hidden');
+  const progressEl = document.getElementById('progress-bar-wrap');
+  if (progressEl) progressEl.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`${API}/api/share/${encodeURIComponent(domain)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+
+    // Reuse the full audit rendering pipeline — same as a live audit completing
+    if (progressEl) progressEl.classList.add('hidden');
+    renderFullAudit(data);
+
+    // Update URL so refreshing stays on share view
+    history.replaceState(null, '', `?share=${encodeURIComponent(domain)}`);
+
+    // Show a "shared view" notice
+    const noticeEl = document.createElement('div');
+    noticeEl.className = 'text-xs text-slate-400 text-center mt-2 fade-in';
+    noticeEl.textContent = `📤 Viewing saved audit for ${domain} · Run a new audit to get fresh results`;
+    document.getElementById('modules')?.prepend(noticeEl);
+
+  } catch (err) {
+    if (progressEl) progressEl.classList.add('hidden');
+    const errEl = document.getElementById('error-message');
+    if (errEl) {
+      errEl.textContent = `Could not load shared audit: ${err.message}`;
+      errEl.classList.remove('hidden');
+    }
+  }
+}
+
+// ── AI Agent Markdown Export ──────────────────────────────────────────────
+// Generates a single-prompt markdown file optimised for AI coding agents.
+// Works as a paste-into-Lovable prompt OR a Claude Code / Cursor context file.
+
+function detectStack(data) {
+  // Detect framework from site_intel third-party scripts or technical_seo hints
+  const techData = data?.modules?.technical_seo?.data ?? {};
+  const siteIntel = data?.modules?.site_intel?.data ?? {};
+  const scripts = (siteIntel.third_party?.script_domains ?? []).join(' ').toLowerCase();
+  const cms = (techData.cms ?? '').toLowerCase();
+  if (cms.includes('wordpress') || cms.includes('wp')) return 'wordpress';
+  if (cms.includes('shopify')) return 'shopify';
+  if (cms.includes('webflow')) return 'webflow';
+  if (cms.includes('wix')) return 'wix';
+  if (cms.includes('squarespace')) return 'squarespace';
+  if (cms.includes('next') || scripts.includes('next')) return 'nextjs';
+  if (cms.includes('nuxt')) return 'nuxt';
+  if (cms.includes('astro')) return 'astro';
+  if (cms.includes('gatsby')) return 'gatsby';
+  if (cms.includes('remix')) return 'remix';
+  // Vite SPA heuristic: no CMS detected, has JS bundle
+  return 'vite'; // safest generic default for modern SPAs
+}
+
+function stackHeadFile(stack) {
+  const map = {
+    nextjs: '`app/layout.tsx` (or `pages/_document.tsx` for Pages Router)',
+    nuxt: '`nuxt.config.ts` useHead / `app.vue` <Head>',
+    astro: 'your layout `.astro` file `<head>` section',
+    gatsby: '`gatsby-ssr.js` or your layout component',
+    remix: 'your root `app/root.tsx` <head> section',
+    wordpress: 'your theme\'s `header.php` or an SEO plugin (Yoast/RankMath)',
+    shopify: 'your theme\'s `theme.liquid` `<head>` section',
+    webflow: 'Webflow → Pages → Custom Code → Head Code',
+    wix: 'Wix → Settings → Custom Code → Head',
+    squarespace: 'Settings → Advanced → Code Injection → Header',
+    vite: '`index.html` `<head>` section',
+  };
+  return map[stack] ?? '`index.html` or your root layout `<head>`';
+}
+
+function stackPublicDir(stack) {
+  const map = {
+    nextjs: '`public/`',
+    nuxt: '`public/`',
+    astro: '`public/`',
+    gatsby: '`static/`',
+    remix: '`public/`',
+    wordpress: 'your domain root (upload via FTP or File Manager)',
+    shopify: 'Assets section (or via Shopify Files)',
+    webflow: 'Upload to Webflow Hosting → Custom Code',
+    wix: 'Wix doesn\'t support custom robots.txt — use Wix SEO settings',
+    squarespace: 'Squarespace doesn\'t support custom robots.txt — use their SEO panel',
+    vite: '`public/`',
+  };
+  return map[stack] ?? '`public/`';
+}
+
+function stackHeadersFile(stack) {
+  if (stack === 'nextjs') return '`next.config.js` `headers()` export';
+  if (stack === 'nuxt') return '`nuxt.config.ts` `routeRules`';
+  if (stack === 'astro') return '`public/_headers` (Netlify/CF Pages) or `astro.config.mjs` headers';
+  if (['gatsby','remix','vite'].includes(stack)) return '`public/_headers` (Cloudflare Pages/Netlify) or `vercel.json`';
+  return 'your server / hosting provider headers config';
+}
+
+function generateAgentMarkdown(data) {
+  const domain   = data?.domain ?? '';
+  const seo      = data?.seo_score  ?? data?.foundation_score ?? 0;
+  const geo      = data?.geo_score  ?? data?.weakness_score   ?? 0;
+  const overall  = data?.overall_score ?? Math.round(seo * 0.55 + geo * 0.45);
+  const mods     = data?.modules ?? {};
+  const date     = new Date().toISOString().slice(0, 10);
+  const stack    = detectStack(data);
+  const headFile = stackHeadFile(stack);
+  const pubDir   = stackPublicDir(stack);
+  const hdrFile  = stackHeadersFile(stack);
+
+  const tech     = mods.technical_seo?.data ?? {};
+  const meta     = tech.page_meta ?? {};
+  const schema   = mods.schema_audit?.data ?? {};
+  const robots   = mods.robots_sitemap?.data ?? {};
+  const rt       = robots.robots_txt ?? {};
+  const sm       = robots.sitemap ?? {};
+  const offPage  = mods.off_page_seo?.data ?? {};
+  const emailSec = offPage.email_security ?? {};
+  const security = mods.security_audit?.data ?? {};
+  const imgAudit = tech.image_audit ?? {};
+  const mobileData = mods.mobile_audit?.data ?? null;
+  const mobile   = mobileData ?? {};
+  const content  = mods.content_quality?.data ?? {};
+  const bl       = mods.broken_links?.data ?? {};
+  const brokenLinks = (bl.broken ?? []).filter(b => b.status !== null);
+
+  // ── Detect what the site is (for schema type) ─────────────────────────
+  const schemasFound = schema.schemas_found ?? [];
+  const coverage = schema.coverage ?? {};
+  // Guess schema type from vertical detected in geo_predicted
+  const vertical = mods.geo_predicted?.data?.vertical ?? mods.keywords?.data?.vertical ?? 'general';
+  const schemaType =
+    vertical === 'restaurant' || vertical === 'food_delivery' ? 'Restaurant' :
+    vertical === 'dental' || vertical === 'medical' ? 'MedicalBusiness' :
+    vertical === 'legal' ? 'LegalService' :
+    vertical === 'real_estate' ? 'RealEstateAgent' :
+    vertical === 'fitness' ? 'SportsActivityLocation' :
+    vertical === 'hotel' ? 'Hotel' :
+    schemasFound.includes('Product') || schemasFound.includes('SoftwareApplication') ? 'SoftwareApplication' :
+    schemasFound.includes('LocalBusiness') ? 'LocalBusiness' :
+    'Organization';
+
+  // ── Build change list ─────────────────────────────────────────────────
+  const changes = [];
+  const dnsChanges = [];
+  let changeNum = 0;
+
+  function addChange(impact, title, body) {
+    changes.push({ num: ++changeNum, impact, title, body });
+  }
+
+  // ── CRITICAL: bot/crawler blocks ───────────────────────────────────────
+  if (rt.blocks_all) {
+    addChange('🔴 CRITICAL', 'Un-block all crawlers in robots.txt',
+`Your robots.txt has \`Disallow: /\` for all user-agents — this blocks Google and all search engines. Fix immediately.
+
+Replace your robots.txt in ${pubDir} with:
+\`\`\`
+User-agent: *
+Allow: /
+
+Sitemap: https://${domain}/sitemap.xml
+\`\`\``);
+  }
+  if (mobileData && !mobile.has_viewport_meta) {
+    addChange('🔴 CRITICAL', 'Add viewport meta tag',
+`The page is missing the viewport meta tag — it will not render correctly on mobile.
+
+Add inside ${headFile}:
+\`\`\`html
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+\`\`\``);
+  }
+
+  // ── HIGH: schema markup ────────────────────────────────────────────────
+  if (schemasFound.length === 0) {
+    const schemaJson = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": schemaType,
+      "name": meta.title ? meta.title.split(/[|—-]/)[0].trim() : domain,
+      "url": `https://${domain}`,
+      "description": meta.description ?? `The home of ${domain}`,
+      ...(schemaType === 'Organization' ? {
+        "logo": `https://${domain}/logo.png`,
+        "sameAs": []
+      } : {}),
+      ...(schemaType === 'SoftwareApplication' ? {
+        "applicationCategory": "WebApplication",
+        "operatingSystem": "Web",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      } : {})
+    }, null, 2);
+    addChange('🟠 HIGH', `Add ${schemaType} JSON-LD schema markup`,
+`No structured data found. Schema markup is how Google, ChatGPT, Gemini and Perplexity understand your business entity — without it, AI engines won't cite you.
+
+Add this inside ${headFile} (before </head>):
+\`\`\`html
+<script type="application/ld+json">
+${schemaJson}
+</script>
+\`\`\`
+
+After adding, validate at: https://validator.schema.org`);
+  } else {
+    if (!coverage.FAQPage) {
+      addChange('🟡 MEDIUM', 'Add FAQPage schema for rich results',
+`FAQPage schema wins answer-box rich results in Google and gets cited by AI engines. Add it alongside your existing schema.
+
+Add inside ${headFile}:
+\`\`\`html
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [{
+    "@type": "Question",
+    "name": "What is ${domain}?",
+    "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "${meta.description ?? `Learn more at https://${domain}`}"
+    }
+  }]
+}
+</script>
+\`\`\``);
+    }
+  }
+
+  // ── HIGH: static files ─────────────────────────────────────────────────
+  if (mods.robots_sitemap?.data && !rt.exists) {
+    addChange('🟠 HIGH', `Create robots.txt in ${pubDir}`,
+`robots.txt is missing. Search engines use it for crawl guidance.
+
+Create the file \`${pubDir.replace(/`/g,'')}/robots.txt\` with this exact content:
+\`\`\`
+User-agent: *
+Allow: /
+
+Sitemap: https://${domain}/sitemap.xml
+\`\`\``);
+  }
+
+  if (mods.robots_sitemap?.data && !sm.exists) {
+    addChange('🟠 HIGH', `Create sitemap.xml in ${pubDir}`,
+`No sitemap found. A sitemap helps Google discover all your pages and is required for Google Search Console submission.
+
+Create \`${pubDir.replace(/`/g,'')}/sitemap.xml\`:
+\`\`\`xml
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://${domain}/</loc>
+    <lastmod>${date}</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <!-- Add a <url> block for every page on your site -->
+</urlset>
+\`\`\`
+
+Then submit it at https://search.google.com/search-console`);
+  }
+
+  // ── HIGH: llms.txt ────────────────────────────────────────────────────
+  if (mods.technical_seo?.data && tech.has_llms_txt === false) {
+    const titleBrand = meta.title ? meta.title.split(/[|—-]/)[0].trim() : domain;
+    addChange('🟠 HIGH', `Create llms.txt in ${pubDir}`,
+`llms.txt tells AI engines (ChatGPT, Claude, Gemini, Perplexity) what to know about your site and which pages to cite. It directly improves GEO (AI search visibility).
+
+Create \`${pubDir.replace(/`/g,'')}/llms.txt\`:
+\`\`\`
+# ${titleBrand}
+> ${meta.description ?? `${titleBrand} — visit https://${domain} to learn more.`}
+
+## About
+${titleBrand} is ${meta.description ?? 'a service available at ' + domain}.
+
+## Key Pages
+- [Home](https://${domain}/)
+
+## Contact
+- Website: https://${domain}
+\`\`\``);
+  }
+
+  // ── HIGH: missing canonical & og tags ─────────────────────────────────
+  const missingMeta = [];
+  if ((tech.issues ?? []).some(i => i.includes('canonical'))) {
+    missingMeta.push(`  <link rel="canonical" href="https://${domain}/" />`);
+  }
+  if ((tech.issues ?? []).some(i => i.includes('og:site_name'))) {
+    const brand = meta.title ? meta.title.split(/[|—-]/)[0].trim() : domain;
+    missingMeta.push(`  <meta property="og:site_name" content="${brand}" />`);
+  }
+  if (!meta.description || meta.description.trim() === '') {
+    missingMeta.push(`  <meta name="description" content="One sentence describing what you offer and for whom. Keep under 160 characters." />`);
+    missingMeta.push(`  <meta property="og:description" content="Same as above." />`);
+  }
+  if (missingMeta.length > 0) {
+    addChange('🟠 HIGH', 'Add missing meta tags to <head>',
+`Add these tags inside ${headFile}:
+\`\`\`html
+${missingMeta.join('\n')}
+\`\`\``);
+  }
+
+  // ── HIGH: title issues ─────────────────────────────────────────────────
+  if (meta.title && meta.title.length < 30) {
+    addChange('🟠 HIGH', 'Expand page title — too short',
+`Current title is only ${meta.title.length} characters: "${meta.title}"
+Target: 30–70 characters. Include the primary keyword near the front.
+
+In ${headFile}, update:
+\`\`\`html
+<title>Your Primary Keyword | ${meta.title}</title>
+\`\`\``);
+  }
+
+  // ── HIGH: security headers ─────────────────────────────────────────────
+  const missingHeaders = security.missing_headers ?? [];
+  if (missingHeaders.length > 0 || (security.issues ?? []).some(i => i.includes('header'))) {
+    if (stack === 'nextjs') {
+      addChange('🟠 HIGH', 'Add security headers in next.config.js',
+`Missing HTTP security headers: ${missingHeaders.length > 0 ? missingHeaders.join(', ') : 'CSP, X-Frame-Options, Referrer-Policy'}. These protect against XSS and clickjacking.
+
+In \`next.config.js\` (or \`next.config.mjs\`), add a \`headers()\` export:
+\`\`\`js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  async headers() {
+    return [{
+      source: '/(.*)',
+      headers: [
+        { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+        { key: 'X-Content-Type-Options', value: 'nosniff' },
+        { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+      ],
+    }];
+  },
+};
+module.exports = nextConfig;
+\`\`\``);
+    } else {
+      addChange('🟠 HIGH', `Add security headers via ${hdrFile}`,
+`Missing security headers protect against XSS, clickjacking, and MIME-sniffing attacks.
+
+Create \`public/_headers\` (for Cloudflare Pages or Netlify) with:
+\`\`\`
+/*
+  X-Frame-Options: SAMEORIGIN
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+\`\`\`
+
+Or for Vercel, add to \`vercel.json\`:
+\`\`\`json
+{
+  "headers": [{
+    "source": "/(.*)",
+    "headers": [
+      { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
+      { "key": "X-Content-Type-Options", "value": "nosniff" },
+      { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+    ]
+  }]
+}
+\`\`\``);
+    }
+  }
+
+  // ── MEDIUM: content ────────────────────────────────────────────────────
+  if ((content.word_count ?? 0) > 0 && (content.word_count ?? 0) < 400) {
+    addChange('🟡 MEDIUM', 'Add more content to the homepage',
+`Only ${content.word_count} words detected. Pages with fewer than 400 words are rarely cited by AI engines and may be considered thin by Google.
+
+Add substantive sections to the homepage:
+- **What you offer** and who it's for (2–3 sentences per benefit)
+- **How it works** (3-step process)
+- **Social proof** (testimonials, user count, or logos)
+- **FAQ section** with 3–5 common questions and answers
+- **Clear CTA** with specific benefit language
+
+Target: 600+ words of meaningful, keyword-relevant content.`);
+  }
+
+  // ── MEDIUM: alt text ───────────────────────────────────────────────────
+  if ((imgAudit.missing_alt ?? 0) > 0) {
+    addChange('🟡 MEDIUM', `Fix ${imgAudit.missing_alt} images missing alt text`,
+`Alt text is required for accessibility (WCAG AA) and helps images rank in Google Image Search.
+
+Find every \`<img>\` without an \`alt\` attribute and add one:
+\`\`\`html
+<!-- Before -->
+<img src="photo.jpg" />
+
+<!-- After -->
+<img src="photo.jpg" alt="Descriptive text about the image content" />
+\`\`\`
+
+Use empty \`alt=""\` ONLY for purely decorative images (dividers, spacers).`);
+  }
+
+  // ── MEDIUM: social profiles ────────────────────────────────────────────
+  const socialProfiles = offPage.social_profiles ?? [];
+  const hasBareSocialLinks = (offPage.issues ?? []).some(i => i.includes('platform homepages'));
+  if (socialProfiles.length === 0 && !hasBareSocialLinks) {
+    addChange('🟡 MEDIUM', 'Add social media profile links to footer',
+`No social profile links found. Social links build brand authority and are used by search engines and AI engines to verify entity identity.
+
+Add links to your active profiles in the site footer:
+\`\`\`html
+<footer>
+  <!-- Add whichever platforms you're active on -->
+  <a href="https://twitter.com/yourbrand" rel="noopener">Twitter/X</a>
+  <a href="https://www.linkedin.com/company/yourbrand" rel="noopener">LinkedIn</a>
+  <a href="https://www.facebook.com/yourbrand" rel="noopener">Facebook</a>
+</footer>
+\`\`\``);
+  } else if (hasBareSocialLinks) {
+    addChange('🟡 MEDIUM', 'Fix social links — update to real profile URLs',
+`Social icons link to platform homepages (e.g., facebook.com/) rather than your actual profiles. This gives zero brand authority signal.
+
+Update each social link to point to your specific profile:
+\`\`\`html
+<!-- Wrong -->
+<a href="https://facebook.com/">Facebook</a>
+
+<!-- Right -->
+<a href="https://facebook.com/yourbrandname">Facebook</a>
+\`\`\``);
+  }
+
+  // ── MEDIUM: images format ─────────────────────────────────────────────
+  const nonWebpCount = (imgAudit.total ?? 0) - (imgAudit.modern_count ?? 0);
+  if (nonWebpCount >= 3) {
+    addChange('🟡 MEDIUM', `Convert ${nonWebpCount}+ images to WebP format`,
+`JPEG/PNG images are larger than necessary. WebP saves 25–35% bandwidth, improving LCP (Core Web Vitals).
+
+${stack === 'nextjs' ? 'Next.js converts images automatically — use the `<Image>` component instead of `<img>`:\n```jsx\nimport Image from \'next/image\';\n<Image src="/photo.jpg" alt="..." width={800} height={600} />\n```' :
+stack === 'vite' ? 'In Vite, convert images before importing:\n```bash\nnpx @squoosh/cli --webp \'{"quality":80}\' public/*.jpg public/*.png\n```\nOr use the vite-imagetools plugin for automatic conversion.' :
+'Convert images using:\n```bash\ncwebp -q 80 input.jpg -o output.webp\n# Or online: https://squoosh.app\n```'}`);
+  }
+
+  // ── MEDIUM: broken links ───────────────────────────────────────────────
+  if (brokenLinks.length > 0) {
+    const linkList = brokenLinks.slice(0, 6)
+      .map(b => `  - **[${b.status}]** ${b.type === 'internal' ? '(internal)' : '(external)'} \`${b.url}\`${b.text ? ` — "${b.text}"` : ''}`)
+      .join('\n');
+    addChange('🟠 HIGH', `Fix ${brokenLinks.length} broken link(s)`,
+`Broken links hurt crawlability and user experience. Internal broken links are especially harmful for SEO.
+
+Broken links found:\n${linkList}
+
+Fix each link: update the href to the correct URL, or remove the link if the page no longer exists.`);
+  }
+
+  // ── LOW: contact info ──────────────────────────────────────────────────
+  if (!content.has_phone && !content.has_email && !content.has_address && (content.word_count ?? 0) > 0) {
+    addChange('🟢 LOW', 'Add contact information to homepage or footer',
+`No contact details found. Google's E-E-A-T guidelines and AI engines weight pages with verifiable contact info higher.
+
+Add to your footer or a contact section:
+\`\`\`html
+<address>
+  <a href="mailto:hello@${domain}">hello@${domain}</a>
+  <!-- Add phone/address if applicable -->
+</address>
+\`\`\``);
+  }
+
+  // ── GEO: llms.txt / AI visibility note ────────────────────────────────
+  const citatRate = mods.geo_predicted?.data?.citation_rate ?? -1;
+  if (citatRate >= 0 && citatRate < 0.3) {
+    addChange('🟡 MEDIUM', 'Improve AI search visibility (GEO)',
+`The site has a low AI citation rate. Beyond the llms.txt file above, these actions will help AI engines find and cite your brand:
+
+1. **Get a Wikidata entry**: Create a Wikidata item for your brand at https://www.wikidata.org/wiki/Special:NewItem — this is the single highest-impact GEO action
+2. **Get cited on authoritative sites**: Press mentions, directory listings, and .edu/.gov links all boost LLM training data inclusion
+3. **Add an About page** with specific, verifiable facts (founding date, mission, team)
+4. **Publish FAQ content** matching questions people search for in your space`);
+  }
+
+  // ── DNS changes (outside Lovable) ────────────────────────────────────
+  if (!emailSec.has_spf) {
+    dnsChanges.push(`**SPF record** — Add this TXT record at your domain registrar/DNS provider:\n\`\`\`\nName: @  Type: TXT  Value: v=spf1 include:_spf.google.com ~all\n\`\`\`\n*(Replace \`_spf.google.com\` with your email provider's SPF include — Gmail, Outlook, Mailchimp, etc.)*`);
+  }
+  if (!emailSec.has_dmarc) {
+    dnsChanges.push(`**DMARC record** — Add this TXT record:\n\`\`\`\nName: _dmarc  Type: TXT  Value: v=DMARC1; p=quarantine; rua=mailto:dmarc@${domain}\n\`\`\``);
+  }
+  if (!emailSec.has_dkim && emailSec.has_mx) {
+    dnsChanges.push(`**DKIM** — Enable DKIM signing in your email provider dashboard (Gmail: Admin Console → Apps → Gmail → Authenticate email). Your DNS provider will get a TXT record to add.`);
+  }
+
+  // ── Build the markdown output ─────────────────────────────────────────
+  const noChanges = changes.length === 0;
+  const estimatedNewScore = Math.min(100, overall + Math.round(changes.filter(c => c.impact.includes('HIGH') || c.impact.includes('CRITICAL')).length * 6));
+
+  const changeBlocks = changes.map(c =>
+    `---\n\n### Change ${c.num} — ${c.title} ${c.impact}\n\n${c.body}\n`
+  ).join('\n');
+
+  const dnsBlock = dnsChanges.length > 0 ? `
+---
+
+## DNS Changes — Do These Outside Lovable/Cursor
+
+These are DNS record changes made at your domain registrar or DNS provider (Cloudflare, Namecheap, GoDaddy, etc.). They cannot be done in code.
+
+${dnsChanges.map((d, i) => `### DNS ${i + 1} — ${d}`).join('\n\n')}
+` : '';
+
+  const stackNote = stack !== 'vite' ? `\n> **Detected stack:** ${stack} — file paths and code examples are tailored accordingly.` : '';
+
+  return `# SEO & GEO Fix Prompt — ${domain}
+> **Audit date:** ${date} | **Current score:** ${overall}/100 (SEO ${seo} · GEO ${geo}) | **Estimated score after fixes:** ~${estimatedNewScore}/100
+> **${changes.length} code change${changes.length !== 1 ? 's' : ''} below** · ${dnsChanges.length > 0 ? dnsChanges.length + ' DNS change' + (dnsChanges.length > 1 ? 's' : '') + ' (at end)' : 'No DNS changes needed'}
+${stackNote}
+
+---
+
+## How to use this file
+
+**Lovable / Bolt / v0:** Copy everything from the first \`---\` line onwards and paste it as a single message in chat.
+
+**Claude Code:** \`claude "$(cat SEO-FIXES-${domain}.md)"\`
+
+**Cursor / Windsurf:** Open this file and say *"Apply all the changes in this file to my project"*
+
+---
+
+## The Prompt (paste from here)
+
+I need you to apply the following SEO and GEO fixes to my website at **${domain}**. Please implement all ${changes.length} code change${changes.length !== 1 ? 's' : ''} in one go. Each change includes the exact content or code — use it as-is, adjusting file paths only if your project structure differs.
+
+${noChanges ? '**No code changes needed — this site is in great shape!**' : changeBlocks}
+${dnsBlock}
+---
+
+*End of prompt. After applying these changes, the site should score approximately **${estimatedNewScore}/100** (up from ${overall}/100).*
+
+---
+
+*Generated by [GeoScore Audit Tool](https://geoscoreapp.pages.dev) on ${date}*
+`;
+}
+
+function downloadAgentMarkdown(data) {
+  const md = generateAgentMarkdown(data);
+  const domain = (data?.domain ?? 'site').replace(/[^a-z0-9.-]/gi, '-');
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `SEO-FIXES-${domain}.md`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+}
+
+// ── Formatted PDF Report Window ───────────────────────────────────────────
+
+function openReportWindow(data) {
+  const domain = data?.domain ?? '';
+  const seo = data?.seo_score ?? 0;
+  const geo = data?.geo_score ?? 0;
+  const overall = data?.overall_score ?? Math.round(seo * 0.55 + geo * 0.45);
+  const date = new Date().toLocaleDateString('en-GB', { day:'numeric', month:'long', year:'numeric' });
+  const mods = data?.modules ?? {};
+
+  const scoreColor = s => s >= 75 ? '#16a34a' : s >= 50 ? '#d97706' : '#dc2626';
+  const scoreBg    = s => s >= 75 ? '#f0fdf4' : s >= 50 ? '#fffbeb' : '#fef2f2';
+
+  // Collect all issues from all modules
+  const allIssues = [];
+  for (const [, mod] of Object.entries(mods)) {
+    const issues = (mod?.data?.issues ?? []);
+    allIssues.push(...issues);
+  }
+
+  const issueRows = allIssues.slice(0, 20).map(i =>
+    `<tr><td style="padding:6px 8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#475569">• ${i.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td></tr>`
+  ).join('');
+
+  const modRows = [
+    ['Technical SEO',    mods.technical_seo,    '⚙'],
+    ['On-Page SEO',      mods.on_page_seo,       '📝'],
+    ['Content Quality',  mods.content_quality,   '📄'],
+    ['Authority',        mods.authority,          '🏆'],
+    ['Off-Page / Social',mods.off_page_seo,      '📣'],
+    ['Security',         mods.security_audit,    '🔒'],
+    ['Accessibility',    mods.accessibility,     '♿'],
+    ['GEO / AI',         mods.geo_predicted,     '🤖'],
+    ['robots.txt + Sitemap', mods.robots_sitemap,'🕷'],
+    ['Core Web Vitals',  mods.crux,              '⚡'],
+  ].map(([label, mod, icon]) => {
+    if (!mod) return '';
+    const st = mod.status;
+    const dot = st === 'ok' ? '🟢' : st === 'partial' ? '🟡' : st === 'failed' ? '🔴' : '⚪';
+    const issues = (mod?.data?.issues ?? []).slice(0,3).map(i =>
+      `<div style="font-size:11px;color:#64748b;margin-top:3px">• ${i.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`
+    ).join('');
+    return `<tr style="border-bottom:1px solid #f1f5f9">
+      <td style="padding:10px 12px;width:32px;font-size:16px">${dot}</td>
+      <td style="padding:10px 4px;font-size:13px;font-weight:600;color:#1e293b;white-space:nowrap">${icon} ${label}</td>
+      <td style="padding:10px 12px">${issues || '<span style="font-size:11px;color:#22c55e">✓ No issues</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SEO Audit Report — ${domain}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1e293b;background:#fff;font-size:14px;line-height:1.5}
+  @media print{
+    .no-print{display:none!important}
+    .page-break{page-break-before:always}
+    body{font-size:11pt}
+    table{page-break-inside:auto}
+    tr{page-break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="no-print" style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:12px 24px;display:flex;align-items:center;gap:12px">
+  <button onclick="window.print()" style="background:#1e293b;color:#fff;border:none;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">🖨 Print / Save as PDF</button>
+  <button onclick="window.close()" style="background:#fff;border:1px solid #e2e8f0;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px">✕ Close</button>
+  <span style="font-size:12px;color:#94a3b8;margin-left:auto">Tip: In the print dialog choose "Save as PDF" → set margins to Minimal for best results</span>
+</div>
+
+<div style="background:linear-gradient(135deg,#1e293b,#334155);color:#fff;padding:40px 48px">
+  <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;color:#94a3b8;margin-bottom:8px">SEO &amp; GEO Audit Report</div>
+  <h1 style="font-size:28px;font-weight:700;margin-bottom:4px">${domain}</h1>
+  <div style="font-size:13px;color:#94a3b8">${date}</div>
+  <div style="display:flex;gap:20px;margin-top:28px">
+    <div style="background:rgba(255,255,255,.08);border-radius:12px;padding:16px 24px;text-align:center">
+      <div style="font-size:36px;font-weight:800;color:${scoreColor(overall)}">${overall}</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:2px">Overall Score</div>
+    </div>
+    <div style="background:rgba(255,255,255,.08);border-radius:12px;padding:16px 24px;text-align:center">
+      <div style="font-size:36px;font-weight:800;color:${scoreColor(seo)}">${seo}</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:2px">SEO Score</div>
+    </div>
+    <div style="background:rgba(255,255,255,.08);border-radius:12px;padding:16px 24px;text-align:center">
+      <div style="font-size:36px;font-weight:800;color:${scoreColor(geo)}">${geo}</div>
+      <div style="font-size:11px;color:#94a3b8;margin-top:2px">GEO Score</div>
+    </div>
+  </div>
+</div>
+
+<div style="padding:32px 48px">
+  <h2 style="font-size:16px;font-weight:700;margin-bottom:16px;color:#1e293b">Module Breakdown</h2>
+  <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
+    ${modRows || '<tr><td style="padding:12px;color:#94a3b8">No module data</td></tr>'}
+  </table>
+
+  ${allIssues.length ? `
+  <div class="page-break" style="margin-top:32px">
+    <h2 style="font-size:16px;font-weight:700;margin-bottom:16px;color:#1e293b">All Issues (${allIssues.length})</h2>
+    <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
+      ${issueRows}
+      ${allIssues.length > 20 ? `<tr><td style="padding:8px;font-size:11px;color:#94a3b8">… and ${allIssues.length - 20} more issues</td></tr>` : ''}
+    </table>
+  </div>` : ''}
+
+  <div style="margin-top:40px;padding-top:20px;border-top:1px solid #f1f5f9;font-size:11px;color:#94a3b8;text-align:center">
+    Generated by GeoScore Audit Tool · ${date}
+  </div>
+</div>
+</body>
+</html>`;
+
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+// ── Re-audit score diff ────────────────────────────────────────────────────
+
+async function loadAndShowDiff(domain, currentSeo, currentGeo) {
+  try {
+    const res = await fetch(`${API}/api/history/${encodeURIComponent(domain)}`);
+    if (!res.ok) return;
+    const { history } = await res.json();
+    if (!history || history.length < 2) return;
+
+    // Most recent previous audit (second-to-last — last is the one just run)
+    const prev = history[history.length - 2];
+    if (!prev) return;
+
+    const seoD   = currentSeo  - prev.seo_score;
+    const geoD   = currentGeo  - prev.geo_score;
+    const prevDate = new Date(prev.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' });
+
+    const fmt = d => {
+      if (d === 0) return '<span style="color:#94a3b8">→</span>';
+      const sign = d > 0 ? '↑' : '↓';
+      const col  = d > 0 ? 'color:#16a34a' : 'color:#dc2626';
+      return `<span style="${col};font-size:11px;font-weight:600">${sign}${Math.abs(d)}</span>`;
+    };
+
+    // Append diff to the context lines below each score ring
+    const seoCtx = document.getElementById('seo-context');
+    const geoCtx = document.getElementById('geo-context');
+    const note   = ` vs ${prevDate}`;
+
+    if (seoCtx && !seoCtx.dataset.diff) {
+      seoCtx.dataset.diff = '1';
+      seoCtx.insertAdjacentHTML('beforeend', `<br>${fmt(seoD)}<span style="font-size:9px;color:#94a3b8">${note}</span>`);
+    }
+    if (geoCtx && !geoCtx.dataset.diff) {
+      geoCtx.dataset.diff = '1';
+      geoCtx.insertAdjacentHTML('beforeend', `<br>${fmt(geoD)}<span style="font-size:9px;color:#94a3b8">${note}</span>`);
+    }
+  } catch { /* non-fatal */ }
+}
+
+// ── Schema JSON-LD generator ──────────────────────────────────────────────
+
+async function handleSchemaGen(btn) {
+  const output  = document.getElementById('schema-gen-output');
+  const textEl  = document.getElementById('schema-gen-text');
+  const copyBtn = document.getElementById('schema-copy-btn');
+  const select  = document.getElementById('schema-type-select');
+  if (!output || !textEl) return;
+
+  btn.disabled = true;
+  output.classList.remove('hidden');
+  textEl.textContent = '';
+  if (copyBtn) copyBtn.classList.add('hidden');
+
+  const genStart = Date.now();
+  const timer = setInterval(() => { btn.textContent = `⏳ Generating… ${fmtSecs(Date.now() - genStart)}`; }, 1000);
+  btn.textContent = '⏳ Generating… 0s';
+
+  try {
+    const res = await fetch(`${API}/api/schema-gen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        domain:       btn.dataset.domain,
+        businessName: btn.dataset.name,
+        schemaType:   select?.value || 'LocalBusiness',
+        city:         btn.dataset.city,
+        country:      btn.dataset.country,
+      }),
+    });
+    if (!res.ok || !res.body) throw new Error();
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value).split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') continue;
+        try { raw += JSON.parse(payload).response ?? ''; } catch { /* skip */ }
+      }
+      textEl.textContent = raw;
+    }
+    clearInterval(timer);
+    if (copyBtn) copyBtn.classList.remove('hidden');
+    btn.textContent = `↻ Re-generate (${fmtSecs(Date.now() - genStart)})`;
+  } catch {
+    clearInterval(timer);
+    textEl.textContent = 'Generation failed — try again.';
+    btn.textContent = '✨ Generate schema';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── GEO entity probe ──────────────────────────────────────────────────────
+
+async function handleGeoProbe(btn) {
+  const output = document.getElementById('geo-probe-output');
+  const result = document.getElementById('geo-probe-result');
+  if (!output || !result) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Checking…';
+  output.classList.remove('hidden');
+  result.innerHTML = '<div class="text-xs text-slate-400">Querying DuckDuckGo knowledge graph…</div>';
+
+  try {
+    const res = await fetch(`${API}/api/geo-probe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: btn.dataset.domain, businessName: btn.dataset.name }),
+    });
+    if (!res.ok) throw new Error();
+    const d = await res.json();
+
+    const scoreColor = d.visibility_score >= 70 ? 'text-green-700' : d.visibility_score >= 30 ? 'text-amber-600' : 'text-orange-600';
+    const scoreBg    = d.visibility_score >= 70 ? 'bg-green-50 border-green-200' : d.visibility_score >= 30 ? 'bg-amber-50 border-amber-200' : 'bg-orange-50 border-orange-200';
+    const signals    = (d.signals ?? []).map(s => `<li class="text-xs text-slate-600">• ${esc(s)}</li>`).join('');
+    result.innerHTML = `
+      <div class="flex items-center gap-3 mb-3">
+        <div class="border rounded-xl px-4 py-2 ${scoreBg} text-center shrink-0">
+          <div class="text-2xl font-bold ${scoreColor}">${d.visibility_score}</div>
+          <div class="text-[10px] text-slate-400">/ 100</div>
+        </div>
+        <div>
+          <div class="text-sm font-semibold text-slate-700">${d.has_knowledge_panel ? '✓ Knowledge panel found' : '✗ Not in knowledge graph'}</div>
+          ${d.knowledge_source ? `<div class="text-xs text-slate-400 mt-0.5">Source: ${esc(d.knowledge_source)}</div>` : ''}
+        </div>
+      </div>
+      ${d.knowledge_summary ? `<div class="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg p-2.5 mb-3 italic line-clamp-3">"${esc(d.knowledge_summary)}"</div>` : ''}
+      <ul class="space-y-1">${signals}</ul>`;
+
+    btn.textContent = '↻ Re-check';
+  } catch {
+    result.innerHTML = '<div class="text-xs text-orange-600">Probe failed — try again.</div>';
+    btn.textContent = 'Check visibility';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── OG image download ─────────────────────────────────────────────────────
+
+async function downloadOgImage(btn) {
+  const imageUrl = btn.dataset.imageUrl;
+  const domain   = btn.dataset.domain;
+  if (!imageUrl) return;
+
+  btn.disabled = true;
+  const original = btn.innerHTML;
+  btn.textContent = '⏳ Downloading…';
+
+  try {
+    const res = await fetch(`${API}/api/fetch-image?url=${encodeURIComponent(imageUrl)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+
+    // Derive extension from URL (strip query string first)
+    const rawExt = imageUrl.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
+    const ext = ['jpg','jpeg','png','webp','gif','svg','avif'].includes(rawExt) ? rawExt : 'jpg';
+
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = `${domain}-og-image.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+
+    btn.innerHTML = '✓ Saved';
+    setTimeout(() => { btn.innerHTML = original; btn.disabled = false; }, 2500);
+  } catch {
+    btn.innerHTML = original;
+    btn.disabled = false;
+  }
+}
+
+// ── SERP snippet optimiser ────────────────────────────────────────────────
+
+async function handleSerpGen(btn) {
+  const output   = document.getElementById('serp-gen-output');
+  const titleEl  = document.getElementById('serp-gen-title');
+  const descEl   = document.getElementById('serp-gen-desc');
+  const tLenEl   = document.getElementById('serp-gen-title-len');
+  const dLenEl   = document.getElementById('serp-gen-desc-len');
+  if (!output || !titleEl || !descEl) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Generating…';
+
+  try {
+    const res = await fetch(`${API}/api/serp-gen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title:       btn.dataset.title,
+        description: btn.dataset.desc,
+        domain:      btn.dataset.domain,
+      }),
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const t = (data.title       ?? '').trim();
+    const d = (data.description ?? '').trim();
+
+    titleEl.textContent = t;
+    descEl.textContent  = d;
+    if (tLenEl) tLenEl.textContent = `${t.length} chars${t.length > 60 ? ' ⚠ too long' : t.length < 50 ? ' ⚠ short' : ' ✓'}`;
+    if (dLenEl) dLenEl.textContent = `${d.length} chars${d.length > 155 ? ' ⚠ too long' : d.length < 120 ? ' ⚠ short' : ' ✓'}`;
+
+    output.classList.remove('hidden');
+    btn.textContent = '↻ Re-generate';
+  } catch {
+    output.classList.remove('hidden');
+    titleEl.textContent = 'Generation failed — please try again.';
+    descEl.textContent  = '';
+    btn.textContent = '✨ Generate optimal snippet';
   } finally {
     btn.disabled = false;
   }
@@ -887,8 +1865,10 @@ function showAuditShell(domain) {
     const r = document.getElementById(`ring-${k}`);
     if (r) { r.style.strokeDashoffset = '314.16'; r.style.display = ''; }
   });
-  // Reset performance block visibility — if a prior audit hid it (no CrUX data)
-  // the next audit must start with it visible again.
+  // Reset AEO + performance block visibility — if a prior audit hid them (no data),
+  // the next audit must start with them visible again.
+  const aeoWrap = document.getElementById('aeo-circle-wrap');
+  if (aeoWrap) aeoWrap.style.display = '';
   const perfWrap = document.getElementById('perf-circle-wrap');
   if (perfWrap) perfWrap.style.display = '';
   const perfSub = document.getElementById('perf-score-sub');
@@ -987,9 +1967,95 @@ function setScoreCircle(key, score, color) {
   animateRing(ringId, score, ringColor);
 }
 
+// ── Lighthouse fetch — runs in its own Worker invocation after main audit completes ──
+// This avoids the 50-subrequest-per-invocation limit on Cloudflare's free plan.
+async function fetchLighthouse(domain) {
+  // Show a "loading" state in the progress list (if still visible) and inject a spinner card
+  updateModuleProgress('lighthouse', 'running', 'Fetching PageSpeed Insights…');
+  const existing = document.getElementById('module-lighthouse');
+  if (!existing) {
+    // Inject a minimal spinner card so user knows it's loading
+    const col = document.getElementById('results-col');
+    if (col) {
+      const tmpCard = document.createElement('div');
+      tmpCard.id = 'module-lighthouse';
+      tmpCard.className = 'audit-card rounded-xl border border-slate-100 bg-white p-4 shadow-sm';
+      tmpCard.innerHTML = `<div class="flex items-center gap-2 text-slate-500 text-sm">
+        <span class="spinner w-4 h-4 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin inline-block"></span>
+        Fetching Lighthouse scores via PageSpeed Insights…
+      </div>`;
+      col.appendChild(tmpCard);
+    }
+  }
+  try {
+    const res = await fetch(`${API}/api/lighthouse?domain=${encodeURIComponent(domain)}`);
+    const json = await res.json();
+    if (!res.ok || !json.ok) {
+      renderSection({ module: 'lighthouse', status: 'failed', error: json.error ?? `HTTP ${res.status}`, data: null, duration_ms: null });
+      return;
+    }
+    const data = json.data;
+    // Inject into mod cache so CWV pills and perf circle can use it
+    window._auditModCache = window._auditModCache ?? {};
+    window._auditModCache.lighthouse = data;
+    // Render the Lighthouse card (replaces the pending card)
+    renderSection({ module: 'lighthouse', status: 'ok', data, duration_ms: null });
+    // Update Performance circle — prefer mobile, fall back to desktop, then module score
+    const lhPerfScore = data.mobile_score ?? data.desktop_score ?? (data.score > 0 ? data.score : null);
+    const lhPerfLabel = data.mobile_score != null ? 'Lighthouse mobile'
+                      : data.desktop_score != null ? 'Lighthouse desktop'
+                      : null;
+    if (lhPerfScore !== null && lhPerfScore !== undefined) {
+      const perfWrap = document.getElementById('perf-circle-wrap');
+      if (perfWrap) perfWrap.style.display = '';
+      setScoreCircle('perf', lhPerfScore, '#16a34a');
+      const perfCtxEl = document.getElementById('perf-context');
+      if (perfCtxEl && lhPerfLabel) perfCtxEl.textContent = lhPerfLabel;
+      const perfSub = document.getElementById('perf-score-sub');
+      if (perfSub) perfSub.textContent = '/100';
+    }
+    // Update CWV pills with lab data
+    updateCwvPillsFromLighthouse(data);
+  } catch (err) {
+    renderSection({ module: 'lighthouse', status: 'failed', error: String(err), data: null, duration_ms: null });
+  }
+}
+
+// Update the CWV pill row with Lighthouse lab values (called after fetchLighthouse resolves)
+function updateCwvPillsFromLighthouse(lh) {
+  const fmt = ms => ms >= 1000 ? `${(ms/1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+  const pillDefs = [
+    { id: 'cwv-lcp',  val: lh.lcp_ms,  label: 'LCP',  good: v => v <= 2500,  warn: v => v <= 4000,  display: fmt },
+    { id: 'cwv-cls',  val: lh.cls,     label: 'CLS',  good: v => v <= 0.1,   warn: v => v <= 0.25,  display: v => v?.toFixed(3) },
+    { id: 'cwv-fcp',  val: lh.fcp_ms,  label: 'FCP',  good: v => v <= 1800,  warn: v => v <= 3000,  display: fmt },
+    { id: 'cwv-tbt',  val: lh.tbt_ms,  label: 'TBT',  good: v => v <= 200,   warn: v => v <= 600,   display: v => `${Math.round(v)}ms` },
+  ];
+  for (const p of pillDefs) {
+    if (p.val == null) continue;
+    const el = document.getElementById(p.id);
+    if (!el) continue;
+    const color = p.good(p.val) ? '#16a34a' : p.warn(p.val) ? '#d97706' : '#dc2626';
+    el.textContent = `${p.label} ${p.display(p.val)}`;
+    el.style.color = color;
+    el.style.borderColor = color;
+  }
+  // Desktop score pill
+  if (lh.desktop_score !== null && lh.desktop_score !== undefined) {
+    const el = document.getElementById('cwv-desktop');
+    if (el) {
+      const color = lh.desktop_score >= 90 ? '#16a34a' : lh.desktop_score >= 50 ? '#d97706' : '#dc2626';
+      el.textContent = `Desktop ${lh.desktop_score}`;
+      el.style.color = color;
+      el.style.borderColor = color;
+    }
+  }
+}
+
 // SSE with auto-reconnect (up to 2 retries on network error)
-function openAuditStream(domain, attempt) {
-  const es = new EventSource(`${API}/api/audit/${encodeURIComponent(domain)}`);
+// fresh=true adds ?fresh=1 so the server atomically busts its cache before re-auditing
+function openAuditStream(domain, attempt, fresh = false) {
+  const freshParam = (fresh && attempt === 0) ? '?fresh=1' : '';
+  const es = new EventSource(`${API}/api/audit/${encodeURIComponent(domain)}${freshParam}`);
 
   es.addEventListener('progress', (e) => {
     const d = JSON.parse(e.data);
@@ -1021,6 +2087,8 @@ function openAuditStream(domain, attempt) {
     renderFullAudit(d);
     enableChat();
     es.close();
+    // Kick off Lighthouse in a separate request (own Worker invocation = own subrequest budget)
+    fetchLighthouse(domain);
   });
 
   es.addEventListener('error', () => {
@@ -1064,6 +2132,29 @@ function renderSiteIntro(data) {
   if (!registrationYear && authData.wayback_first_seen) {
     const y = new Date(authData.wayback_first_seen).getFullYear();
     if (!isNaN(y) && y > 1990 && y <= nowYear) waybackYear = y;
+  }
+
+  // ── Inject Wayback year into off_page card (runs after all modules are rendered) ──
+  {
+    const wbYear = registrationYear || waybackYear;
+    if (wbYear) {
+      const offDetail = document.getElementById('off-page-detail');
+      if (offDetail) {
+        const existingChip = offDetail.querySelector('[data-wb-year]');
+        if (existingChip) {
+          existingChip.innerHTML = `📦 Archived since <strong>${wbYear}</strong>`;
+        } else {
+          const statsRow = offDetail.querySelector('.flex.flex-wrap.gap-2.text-sm.text-slate-600');
+          if (statsRow) {
+            const chip = document.createElement('span');
+            chip.setAttribute('data-wb-year', '');
+            chip.className = 'bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg';
+            chip.innerHTML = `📦 Archived since <strong>${wbYear}</strong>`;
+            statsRow.prepend(chip);
+          }
+        }
+      }
+    }
   }
 
   // ── Domain age ────────────────────────────────────────────────────────────
@@ -1123,8 +2214,8 @@ function renderSiteIntro(data) {
   const authSignals = [];
   if (authData.wikipedia)   authSignals.push('a Wikipedia article');
   if (authData.wikidata_id) authSignals.push('a Wikidata knowledge graph entry');
-  const backlinkCount = authData.backlink_sample_count ?? 0;
-  if (backlinkCount >= 10)  authSignals.push(`${backlinkCount}+ linking domains in Common Crawl`);
+  const backlinkCount = authData.indexed_page_count ?? 0;
+  if (backlinkCount >= 10)  authSignals.push(`${backlinkCount}+ pages indexed in Common Crawl`);
   const socialCount = offPageData?.social_profiles?.length ?? 0;
   if (socialCount >= 2)     authSignals.push(`${socialCount} social media profiles`);
   if (authSignals.length > 0) {
@@ -1240,6 +2331,30 @@ function renderFullAudit(data) {
     setScoreCircle('seo',     data.seo_score ?? 0,     '#2563eb');
     setScoreCircle('geo',     data.geo_score ?? 0,     '#7c3aed');
 
+    // AEO score (Answer Engine Optimisation — 5th metric)
+    if (data.aeo_score !== undefined) {
+      const aeoWrap = document.getElementById('aeo-circle-wrap');
+      if (aeoWrap) aeoWrap.style.display = '';   // always show when data present
+      setScoreCircle('aeo', data.aeo_score, '#f59e0b');
+      const aeoCtx = document.getElementById('aeo-context');
+      if (aeoCtx) {
+        const geoHigh = (data.geo_score ?? 0) >= 65;
+        if (data.aeo_score >= 70) {
+          aeoCtx.textContent = 'AI-answer ready';
+        } else if (data.aeo_score >= 40) {
+          aeoCtx.textContent = 'Partially optimised';
+        } else if (geoHigh) {
+          // Brand is well-known but website lacks structured answer signals
+          aeoCtx.textContent = 'Known brand · add schema';
+        } else {
+          aeoCtx.textContent = 'Add FAQ schema';
+        }
+      }
+    } else {
+      const aeoWrap = document.getElementById('aeo-circle-wrap');
+      if (aeoWrap) aeoWrap.style.display = 'none';
+    }
+
     // Cross-metric insight appended to overall context
     const _seo = data.seo_score ?? 0, _geo = data.geo_score ?? 0;
     // setScoreCircle already sets overall-context; we enrich it after
@@ -1253,14 +2368,24 @@ function renderFullAudit(data) {
       }
     });
 
-    // Performance score: PageSpeed first, CrUX composite as fallback
+    // Performance score: Lighthouse mobile → desktop → PageSpeed → CrUX composite
     const ps = data.modules?.on_page_seo?.data?.page_speed;
     const cruxData = data.modules?.crux?.data;
-    const perfScore = ps?.performance ?? (cruxData?.has_data ? cruxData.performance_score : null);
-    if (perfScore !== null) {
+    const lighthouseData = data.modules?.lighthouse?.data;
+    const perfScore = lighthouseData?.mobile_score
+      ?? lighthouseData?.desktop_score
+      ?? ps?.performance
+      ?? (cruxData?.has_data ? cruxData.performance_score : null);
+    if (perfScore !== null && perfScore !== undefined) {
       setScoreCircle('perf', perfScore, '#16a34a');
+      const perfCtxEl = document.getElementById('perf-context');
+      if (perfCtxEl && lighthouseData) {
+        perfCtxEl.textContent = lighthouseData.mobile_score != null ? 'Lighthouse mobile'
+                              : lighthouseData.desktop_score != null ? 'Lighthouse desktop'
+                              : 'Lighthouse';
+      }
     } else {
-      // No CrUX data — hide the entire performance circle so there's no empty ring
+      // No performance data — hide the entire performance circle so there's no empty ring
       const perfWrap = document.getElementById('perf-circle-wrap');
       if (perfWrap) perfWrap.style.display = 'none';
     }
@@ -1297,11 +2422,21 @@ function renderFullAudit(data) {
       document.getElementById('data-provenance-row')?.classList.remove('hidden');
     }
 
-    // CWV pill row — PageSpeed primary, CrUX p75 fallback
+    // CWV pill row — Lighthouse primary, PageSpeed fallback, CrUX p75 last
     const cwvRow = document.getElementById('cwv-row');
     if (cwvRow) {
       let pills = '';
-      if (ps) {
+      if (lighthouseData?.lcp_ms != null) {
+        // Lighthouse lab data
+        const ld = lighthouseData;
+        pills = [
+          ld.lcp_ms != null && cwvPill('LCP',  (ld.lcp_ms/1000).toFixed(1)+'s', ld.lcp_ms <= 2500 ? 'good' : ld.lcp_ms <= 4000 ? 'needs' : 'poor'),
+          ld.cls    != null && cwvPill('CLS',  ld.cls.toFixed(3),                ld.cls    <= 0.1  ? 'good' : ld.cls    <= 0.25  ? 'needs' : 'poor'),
+          ld.fcp_ms != null && cwvPill('FCP',  (ld.fcp_ms/1000).toFixed(1)+'s', ld.fcp_ms <= 1800 ? 'good' : ld.fcp_ms <= 3000  ? 'needs' : 'poor'),
+          ld.tbt_ms != null && cwvPill('TBT',  Math.round(ld.tbt_ms)+'ms',       ld.tbt_ms <= 200  ? 'good' : ld.tbt_ms <= 600   ? 'needs' : 'poor'),
+          ld.desktop_score != null && cwvPill('Desktop', ld.desktop_score+'/100', ld.desktop_score >= 90 ? 'good' : ld.desktop_score >= 50 ? 'needs' : 'poor'),
+        ].filter(Boolean).join('');
+      } else if (ps) {
         pills = [
           ps.lcp_s  != null && cwvPill('LCP',  ps.lcp_s.toFixed(1)  + 's', ps.lcp_s  <= 2.5 ? 'good' : ps.lcp_s  <= 4   ? 'needs' : 'poor'),
           ps.cls    != null && cwvPill('CLS',  ps.cls.toFixed(3),           ps.cls    <= 0.1  ? 'good' : ps.cls    <= 0.25 ? 'needs' : 'poor'),
@@ -1345,10 +2480,10 @@ function renderFullAudit(data) {
   // Save scores for next visit
   if (data.overall_score !== undefined) {
     const ps = data.modules?.on_page_seo?.data?.page_speed;
-    localStorage.setItem(lsKey, JSON.stringify({
+    try { localStorage.setItem(lsKey, JSON.stringify({
       overall: data.overall_score, seo: data.seo_score, geo: data.geo_score,
       perf: ps?.performance ?? null, ts: Date.now(),
-    }));
+    })); } catch { /* Safari private mode */ }
   }
 
   // Wire action buttons
@@ -1415,45 +2550,20 @@ function wireActionButtons(data) {
   const navFreshBtn = document.getElementById('nav-fresh-btn');
   if (navFreshBtn) {
     navFreshBtn.classList.remove('hidden');
+    navFreshBtn.classList.add('flex');
     if (!navFreshBtn.dataset.wired) {
       navFreshBtn.dataset.wired = '1';
-      navFreshBtn.addEventListener('click', async () => {
-        navFreshBtn.disabled = true;
-        navFreshBtn.textContent = 'Clearing…';
-        try {
-          await fetch(`${API}/api/audit/${encodeURIComponent(data.domain)}/cache`, { method: 'DELETE' });
-        } catch { /* proceed anyway */ }
+      navFreshBtn.addEventListener('click', () => {
         computedSectionsRendered = false;
         document.getElementById('modules').innerHTML = '';
         document.getElementById('scores').classList.add('hidden');
-        navFreshBtn.disabled = false;
         navFreshBtn.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Start Fresh`;
         navFreshBtn.dataset.wired = '';
-        openAuditStream(data.domain, 0);
+        openAuditStream(currentDomain, 0, true);
       });
     }
   }
 
-  // Re-audit — clears KV cache then restarts the audit stream
-  const reauditBtn = document.getElementById('reaudit-btn');
-  if (reauditBtn && !reauditBtn.dataset.wired) {
-    reauditBtn.dataset.wired = '1';
-    reauditBtn.addEventListener('click', async () => {
-      reauditBtn.disabled = true;
-      reauditBtn.textContent = 'Clearing…';
-      try {
-        await fetch(`${API}/api/audit/${encodeURIComponent(data.domain)}/cache`, { method: 'DELETE' });
-      } catch { /* ignore — proceed anyway */ }
-      // Reset UI and re-run
-      computedSectionsRendered = false;
-      document.getElementById('modules').innerHTML = '';
-      document.getElementById('scores').classList.add('hidden');
-      reauditBtn.disabled = false;
-      reauditBtn.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Fresh Audit`;
-      reauditBtn.dataset.wired = '';
-      openAuditStream(data.domain, 0);
-    });
-  }
 
   // Share link — copies current URL (already has ?d=domain from pushState)
   const shareBtn = document.getElementById('share-btn');
@@ -1471,12 +2581,32 @@ function wireActionButtons(data) {
     });
   }
 
-  // PDF export
+  // AI Agent markdown export — downloads SEO-TASKS-domain.md
+  const agentBtn = document.getElementById('agent-btn');
+  if (agentBtn && !agentBtn.dataset.wired) {
+    agentBtn.dataset.wired = '1';
+    agentBtn.addEventListener('click', () => {
+      const orig = agentBtn.innerHTML;
+      agentBtn.textContent = '⏳ Building…';
+      setTimeout(() => {
+        downloadAgentMarkdown(data);
+        agentBtn.textContent = '✓ Downloaded!';
+        setTimeout(() => { agentBtn.innerHTML = orig; }, 2000);
+      }, 50);
+    });
+  }
+
+  // PDF export — opens a formatted report in a new window (print/save as PDF from there)
   const exportBtn = document.getElementById('export-btn');
   if (exportBtn && !exportBtn.dataset.wired) {
     exportBtn.dataset.wired = '1';
-    exportBtn.addEventListener('click', () => window.print());
+    exportBtn.addEventListener('click', () => openReportWindow(data));
   }
+
+  // (shareBtn already wired above — duplicate block removed)
+
+  // Re-audit diff — load history and show score deltas in the header
+  loadAndShowDiff(data.domain, data.seo_score, data.geo_score);
 
   // Monitor toggle
   const monitorBtn = document.getElementById('monitor-btn');
@@ -1705,6 +2835,10 @@ function renderSection(d) {
   const ms = d.duration_ms != null ? `<span class="text-sm text-slate-300 ml-auto">${d.duration_ms < 1000 ? d.duration_ms + 'ms' : (d.duration_ms / 1000).toFixed(1) + 's'}</span>` : '';
   let detail = '';
 
+  // Cache each module's data so cross-module fields can be referenced during render
+  window._auditModCache = window._auditModCache || {};
+  if (d.module && d.data) window._auditModCache[d.module] = d.data;
+
   if (d.module === 'technical_seo' && data) {
     const issues = (data.issues ?? []).slice(0, 6).map(i =>
       `<li class="text-sm ${i.startsWith('CRITICAL') ? 'text-orange-700 font-semibold' : 'text-blue-600'}">• ${esc(i)}</li>`
@@ -1758,6 +2892,10 @@ function renderSection(d) {
         ${data.compression?.enabled ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">${esc(data.compression.encoding)} ✓</span>` : '<span class="bg-orange-50 text-orange-600 border border-orange-200 text-xs px-2.5 py-1 rounded-full font-medium">No compression</span>'}
         ${(data.render_blocking_scripts ?? 0) > 0 ? `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full font-medium">⚠ ${data.render_blocking_scripts} blocking scripts</span>` : ''}
         ${data.dom_element_count ? `<span class="text-xs text-slate-500 border border-slate-200 px-2.5 py-1 rounded-full">${data.dom_element_count} DOM elements</span>` : ''}
+        ${data.http3_supported ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">⚡ HTTP/3</span>` : ''}
+        ${data.rss_feed_url ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">📡 RSS feed</span>` : ''}
+        ${data.pwa?.has_manifest ? `<span class="bg-purple-50 text-purple-700 border border-purple-200 text-xs px-2.5 py-1 rounded-full font-medium">📱 PWA${data.pwa.display === 'standalone' ? ' standalone' : ''}</span>` : ''}
+        ${data.ai_training_optout ? `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full font-medium">🤖 AI training opt-out</span>` : ''}
       </div>
       <div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
         <div class="flex items-center justify-between mb-2.5">
@@ -1817,8 +2955,8 @@ function renderSection(d) {
     const scoreBar = scoreNum >= 80 ? 'bg-green-400' : scoreNum >= 60 ? 'bg-yellow-400' : 'bg-orange-400';
     const scoreText = scoreNum >= 80 ? 'text-green-700' : scoreNum >= 60 ? 'text-yellow-700' : 'text-orange-600';
     const wordColor = (data.word_count ?? 0) >= 300 ? 'text-green-700' : (data.word_count ?? 0) >= 150 ? 'text-yellow-700' : 'text-orange-600';
-    const altPct = data.alt_coverage_pct ?? 0;
-    const altColor = altPct >= 90 ? 'text-green-700' : altPct >= 60 ? 'text-yellow-700' : 'text-orange-600';
+    const flesch = data.readability?.flesch_ease ?? 0;
+    const fleschColor = flesch >= 60 ? 'text-green-700' : flesch >= 40 ? 'text-yellow-700' : 'text-orange-600';
     detail = `<div class="mt-3 space-y-3">
       <div class="flex items-center gap-3">
         <div class="flex-1 bg-slate-100 rounded-full h-2.5">
@@ -1826,27 +2964,17 @@ function renderSection(d) {
         </div>
         <span class="text-base font-bold ${scoreText} shrink-0">${scoreNum}/100</span>
       </div>
-      <div class="grid grid-cols-4 gap-2 text-center">
+      <div class="grid grid-cols-2 gap-2 text-center">
         <div class="bg-slate-50 rounded-lg p-3">
           <div class="text-sm font-bold ${wordColor}">${data.word_count ?? 0}</div>
           <div class="text-xs text-slate-400 mt-0.5">Words</div>
         </div>
         <div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-sm font-bold text-slate-700">${data.h2_count ?? 0}</div>
-          <div class="text-xs text-slate-400 mt-0.5">H2 headings</div>
-        </div>
-        <div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-sm font-bold text-slate-700">${data.image_count ?? 0}</div>
-          <div class="text-xs text-slate-400 mt-0.5">Images</div>
-        </div>
-        <div class="bg-slate-50 rounded-lg p-3">
-          <div class="text-sm font-bold ${altColor}">${altPct}%</div>
-          <div class="text-xs text-slate-400 mt-0.5">Alt coverage</div>
+          <div class="text-sm font-bold ${fleschColor}">${flesch}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Reading ease</div>
         </div>
       </div>
       <div class="flex flex-wrap gap-1.5">
-        <span class="${data.has_phone ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-700 border-amber-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${data.has_phone ? '📞 Phone number' : '⚠ No phone number'}</span>
-        ${data.has_address ? '<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">📍 Address present</span>' : ''}
         ${data.has_email ? '<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✉ Email present</span>' : ''}
         ${data.language ? `<span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full">🌐 ${esc(data.language)}</span>` : ''}
       </div>
@@ -1860,7 +2988,7 @@ function renderSection(d) {
     const opr = data.page_rank;
     const oprBar = opr != null ? (opr >= 7 ? 'bg-green-400' : opr >= 4 ? 'bg-yellow-400' : 'bg-orange-400') : '';
     const oprText = opr != null ? (opr >= 7 ? 'text-green-700' : opr >= 4 ? 'text-yellow-700' : 'text-orange-600') : '';
-    const backlinks = data.backlink_sample_count ?? 0;
+    const backlinks = data.indexed_page_count ?? 0;
     detail = `<div class="mt-3 space-y-3">
       <div class="grid grid-cols-2 gap-3">
         <div class="bg-slate-50 rounded-lg p-3">
@@ -1883,7 +3011,7 @@ function renderSection(d) {
       <div class="flex flex-wrap gap-1.5">
         <span class="${data.wikipedia ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${data.wikipedia ? '✓ Wikipedia' : '✗ No Wikipedia'}</span>
         <span class="${data.wikidata_id ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'} border text-xs px-2.5 py-1 rounded-full font-medium">${data.wikidata_id ? '✓ Wikidata entity' : '✗ No Wikidata'}</span>
-        <span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full font-medium">~${backlinks} backlinks sampled</span>
+        <span class="bg-slate-100 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full font-medium">~${backlinks} pages indexed</span>
         ${data.wikidata_id ? `<span class="text-xs text-slate-400 self-center font-mono">${esc(data.wikidata_id)}</span>` : ''}
       </div>
     </div>`;
@@ -2016,6 +3144,25 @@ function renderSection(d) {
     const headings = data.headings ?? {};
     const imgs = data.images ?? {};
     const content = data.content ?? {};
+    // Cross-module enrichment — all data already fetched by parallel modules
+    const techCache  = window._auditModCache?.technical_seo;
+    const cqCache    = window._auditModCache?.content_quality;
+    const kwCache    = window._auditModCache?.keywords;
+    const pageMeta   = techCache?.page_meta ?? {};
+    // Decode HTML entities (e.g. &amp; → &) before rendering — the server returns raw HTML-encoded strings.
+    const titleText  = pageMeta.title ? decodeHTMLEntities(pageMeta.title) : null;
+    const titleLen   = titleText ? titleText.length : 0;
+    const titleColor = titleLen >= 50 && titleLen <= 60 ? 'text-green-600' : 'text-amber-600';
+    const metaDesc   = pageMeta.description ? decodeHTMLEntities(pageMeta.description) : null;
+    const metaLen    = metaDesc ? metaDesc.length : 0;
+    const metaColor  = metaLen >= 120 && metaLen <= 160 ? 'text-green-600' : 'text-amber-600';
+    const canonUrl   = pageMeta.canonical_url; // null = no canonical; undefined = not yet loaded
+    const rdbl       = cqCache?.readability ?? {};
+    const gradeLabel = rdbl.grade_label;
+    const gradeLevel = rdbl.grade_level;
+    const freshDate  = pageMeta.article_modified_time ?? pageMeta.article_published_time ?? null;
+    const opAuthor   = pageMeta.article_author ?? null;
+    const topKws     = (kwCache?.is_reliable && Array.isArray(kwCache?.keywords)) ? kwCache.keywords.slice(0, 4) : [];
     detail = `<div class="mt-3 space-y-3">
       ${ps ? `<div class="grid grid-cols-2 gap-2">
         <div class="bg-slate-50 rounded-lg p-3">
@@ -2027,16 +3174,32 @@ function renderSection(d) {
           <div class="text-base font-bold ${ps.accessibility >= 90 ? 'text-green-700' : ps.accessibility >= 70 ? 'text-yellow-700' : 'text-orange-600'}">${ps.accessibility}/100</div>
         </div>
       </div>` : ''}
+      ${titleText ? `<div class="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 flex items-center gap-2"><span class="text-slate-400 shrink-0">Title:</span><span class="text-slate-600 font-medium truncate">"${esc(titleText.slice(0, 65))}${titleText.length > 65 ? '…' : ''}"</span><span class="shrink-0 ${titleColor} font-semibold">${titleLen}ch</span></div>` : ''}
+      ${metaDesc ? `<div class="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 flex items-center gap-2"><span class="text-slate-400 shrink-0">Meta:</span><span class="text-slate-500 truncate">"${esc(metaDesc.slice(0, 65))}${metaDesc.length > 65 ? '…' : ''}"</span><span class="shrink-0 ${metaColor} font-semibold">${metaLen}ch</span></div>` : ''}
+      ${headings.h1_texts?.[0] ? `<div class="text-xs text-slate-500 italic bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 truncate">H1: "${esc(headings.h1_texts[0].slice(0, 90))}${headings.h1_texts[0].length > 90 ? '…' : ''}"</div>` : ''}
       <div class="flex flex-wrap gap-2 text-sm text-slate-600">
         ${headings.h1 != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">H1: <strong>${headings.h1}</strong></span>` : ''}
         ${headings.h2 != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">H2: <strong>${headings.h2}</strong></span>` : ''}
         ${headings.h3 != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg">H3: <strong>${headings.h3}</strong></span>` : ''}
-        ${content.word_count != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${content.word_count}</strong> words · <strong>${content.reading_time_min ?? 0}</strong>min</span>` : ''}
-        ${data.links ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${data.links.internal}</strong> internal · <strong>${data.links.external}</strong> external</span>` : ''}
-        ${imgs.total != null ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${imgs.total}</strong> imgs · <strong>${imgs.missing_alt ?? 0}</strong> no-alt</span>` : ''}
+        ${(content.reading_time_min != null || content.paragraph_count != null) ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${content.reading_time_min ?? 0}</strong>min · <strong>${content.paragraph_count ?? 0}</strong>§</span>` : ''}
+        ${data.links ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${data.links.internal}</strong> internal · <strong>${data.links.external}</strong> ext${data.links.nofollow > 0 ? ` · <strong>${data.links.nofollow}</strong> nofollow` : ''}</span>` : ''}
       </div>
       <div class="flex flex-wrap gap-1.5">
+        ${canonUrl !== undefined ? (canonUrl ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium" title="${esc(canonUrl)}">✓ Canonical</span>` : `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No canonical</span>`) : ''}
+        ${gradeLabel && gradeLabel !== 'N/A' && gradeLabel !== 'Insufficient content' ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full" title="Flesch reading ease: ${rdbl.flesch_ease}">Grade ${gradeLevel} · ${esc(gradeLabel)}</span>` : ''}
+        ${opAuthor ? `<span class="bg-slate-50 text-slate-600 border border-slate-200 text-xs px-2.5 py-1 rounded-full">✍ ${esc(opAuthor.slice(0, 30))}${opAuthor.length > 30 ? '…' : ''}</span>` : ''}
+        ${freshDate ? `<span class="bg-slate-50 text-slate-500 border border-slate-200 text-xs px-2.5 py-1 rounded-full">📅 ${esc(freshDate.slice(0, 10))}</span>` : ''}
+      </div>
+      ${topKws.length > 0 ? `<div><div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Top keywords</div><div class="flex flex-wrap gap-1.5">${topKws.map(k => `<span class="text-xs bg-slate-100 text-slate-700 border border-slate-200 px-2.5 py-1 rounded-full">${esc(k.keyword)}${k.intent ? ` <span class="text-slate-400 font-normal">${esc(k.intent)}</span>` : ''}</span>`).join('')}</div></div>` : ''}
+      ${imgs.total > 0 ? `<div class="flex flex-wrap gap-1.5">
+        ${imgs.modern_format > 0 ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ ${imgs.modern_format} WebP/AVIF</span>` : `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No WebP/AVIF</span>`}
+        ${imgs.lazy_loaded > 0 ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ ${imgs.lazy_loaded} lazy-loaded</span>` : `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No lazy loading</span>`}
+        ${imgs.responsive > 0 ? `<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ ${imgs.responsive} responsive</span>` : ''}
+        ${imgs.missing_dimensions > 0 ? `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">⚠ ${imgs.missing_dimensions} no dimensions</span>` : ''}
+      </div>` : ''}
+      <div class="flex flex-wrap gap-1.5">
         ${content.has_faq != null ? (content.has_faq ? '<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ FAQ section</span>' : '<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No FAQ</span>') : ''}
+        ${content.has_table ? '<span class="bg-blue-50 text-blue-700 border border-blue-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Table</span>' : ''}
         ${content.has_video ? '<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Video content</span>' : ''}
       </div>
       ${cwv ? `<div class="flex flex-wrap gap-2">${cwv}</div>` : ''}
@@ -2054,32 +3217,38 @@ function renderSection(d) {
     const socialBadges = socials.map(s =>
       `<a href="${esc(s.url)}" target="_blank" rel="noopener" class="text-xs border border-slate-200 px-2.5 py-1 rounded-full hover:bg-slate-50 transition-colors font-medium">${esc(s.platform)} <span class="text-slate-400 font-normal">${esc(s.handle)}</span></a>`
     ).join('');
-    detail = `<div class="mt-3 space-y-3">
+    // Pull Wayback first-seen from authority module cache (avoids duplicate CDX call)
+    const authCache = window._auditModCache?.authority;
+    const wbDateStr = authCache?.wayback_first_seen ?? data.wayback_first_year;
+    const waybackYear = typeof wbDateStr === 'number' ? wbDateStr
+      : (typeof wbDateStr === 'string' && wbDateStr.length >= 4 ? parseInt(wbDateStr.slice(0, 4)) : null);
+    // Cross-module: content_quality for NAP signals
+    const cqCacheOff   = window._auditModCache?.content_quality;
+    detail = `<div class="mt-3 space-y-3" id="off-page-detail">
+      ${brand.ddg_entity || brand.ddg_abstract ? `<div class="border border-blue-100 rounded-lg p-3 bg-blue-50/30">
+        ${brand.ddg_entity ? `<div class="text-sm font-semibold text-slate-700 mb-1">${esc(brand.ddg_entity)}</div>` : ''}
+        ${brand.ddg_abstract ? `<div class="text-xs text-slate-500 italic leading-relaxed">${esc(brand.ddg_abstract.slice(0, 250))}${brand.ddg_abstract.length > 250 ? '…' : ''}</div>` : ''}
+      </div>` : ''}
+      <div class="flex flex-wrap gap-2 text-sm text-slate-600">
+        ${waybackYear ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg" data-wb-year>📦 Archived since <strong>${waybackYear}</strong></span>` : ''}
+        ${brand.has_knowledge_panel ? `<span class="bg-green-50 text-green-700 border border-green-200 px-2.5 py-1 rounded-lg text-xs font-medium">✓ Knowledge panel</span>` : `<span class="bg-slate-50 text-slate-400 border border-slate-200 px-2.5 py-1 rounded-lg text-xs">✗ No knowledge panel</span>`}
+        ${socials.length > 0 ? `<span class="bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg"><strong>${socials.length}</strong> social profile${socials.length !== 1 ? 's' : ''}</span>` : ''}
+        <span class="${em.has_mx ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-700 border-amber-200'} border px-2.5 py-1 rounded-lg text-xs font-medium">📧 Mail server ${em.has_mx ? '✓' : '✗'}</span>
+        <span class="${em.has_spf ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-700 border-amber-200'} border px-2.5 py-1 rounded-lg text-xs font-medium">SPF ${em.has_spf ? '✓' : '✗'}</span>
+        <span class="${em.has_dkim ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-700 border-amber-200'} border px-2.5 py-1 rounded-lg text-xs font-medium">DKIM ${em.has_dkim ? `✓ <span class="font-normal opacity-70">${esc(em.dkim_selector ?? '')}</span>` : '✗'}</span>
+        <span class="${em.has_dmarc ? (em.dmarc_policy === 'reject' || em.dmarc_policy === 'quarantine' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-amber-50 text-amber-700 border-amber-200') : 'bg-red-50 text-red-700 border-red-200'} border px-2.5 py-1 rounded-lg text-xs font-medium">DMARC ${em.has_dmarc ? `✓ <span class="font-normal opacity-70">${esc(em.dmarc_policy ?? 'none')}</span>` : '✗'}</span>
+      </div>
       ${socialBadges ? `<div>
         <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Social profiles</div>
         <div class="flex flex-wrap gap-1.5">${socialBadges}</div>
       </div>` : ''}
-      <div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
-        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Email infrastructure</div>
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="bg-white rounded-lg p-2 border border-slate-100">
-            <div class="text-sm font-bold ${em.has_mx ? 'text-green-600' : 'text-orange-500'}">${em.has_mx ? '✓' : '✗'}</div>
-            <div class="text-xs text-slate-400 mt-0.5">MX record</div>
-          </div>
-          <div class="bg-white rounded-lg p-2 border border-slate-100">
-            <div class="text-sm font-bold ${em.has_spf ? 'text-green-600' : 'text-orange-500'}">${em.has_spf ? '✓' : '✗'}</div>
-            <div class="text-xs text-slate-400 mt-0.5">SPF</div>
-          </div>
-          <div class="bg-white rounded-lg p-2 border border-slate-100">
-            <div class="text-sm font-bold ${em.has_dmarc ? (em.dmarc_policy === 'reject' ? 'text-green-600' : em.dmarc_policy === 'quarantine' ? 'text-yellow-600' : em.dmarc_policy === 'none' ? 'text-amber-600' : 'text-slate-500') : 'text-orange-500'}">${em.has_dmarc ? (em.dmarc_policy ? esc(em.dmarc_policy) : 'present') : '✗'}</div>
-            <div class="text-xs text-slate-400 mt-0.5">DMARC</div>
-          </div>
+      ${cqCacheOff ? `<div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
+        <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">NAP signals</div>
+        <div class="flex flex-wrap gap-1.5">
+          ${cqCacheOff.has_phone ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Phone</span>` : `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No phone</span>`}
+          ${cqCacheOff.has_address ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ Address</span>` : `<span class="bg-amber-50 text-amber-700 border border-amber-200 text-xs px-2.5 py-1 rounded-full">✗ No address</span>`}
         </div>
-      </div>
-      ${brand.has_knowledge_panel !== undefined ? `<div class="flex items-center gap-2 text-sm">
-        <span class="${brand.has_knowledge_panel ? 'text-green-600' : 'text-slate-400'}">${brand.has_knowledge_panel ? '✓ Google Knowledge Panel found' : '✗ No Google Knowledge Panel'}</span>
       </div>` : ''}
-      ${brand.ddg_abstract ? `<div class="text-sm text-slate-500 italic border-l-2 border-blue-200 pl-3">${esc(brand.ddg_abstract.slice(0, 220))}${brand.ddg_abstract.length > 220 ? '…' : ''}</div>` : ''}
       ${issues ? `<ul class="space-y-1">${issues}</ul>` : ''}
     </div>`;
 
@@ -2310,6 +3479,23 @@ function renderSection(d) {
             <span class="text-base">🏆</span>All ${passed.length} security controls passed
           </div>`}
 
+      <!-- HSTS preload + security.txt status pills -->
+      ${(() => {
+        const preload = data.hsts_preload_status;
+        const secTxt  = data.security_txt;
+        const preloadChip = preload === 'preloaded'
+          ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-green-50 text-green-700 border border-green-200">🔒 HSTS preloaded</span>`
+          : preload === 'pending'
+          ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200">⏳ HSTS preload pending</span>`
+          : `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 border border-slate-200">✗ Not HSTS preloaded</span>`;
+        const secTxtChip = secTxt?.present && !secTxt?.is_expired
+          ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-green-50 text-green-700 border border-green-200">✓ security.txt${secTxt.contact ? ` · ${esc(secTxt.contact.slice(0,40))}` : ''}</span>`
+          : secTxt?.present && secTxt?.is_expired
+          ? `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200">⚠ security.txt expired</span>`
+          : `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 border border-slate-200">✗ No security.txt</span>`;
+        return `<div class="flex flex-wrap gap-1.5">${preloadChip}${secTxtChip}</div>`;
+      })()}
+
       <!-- Failed tests with detail -->
       ${failedCards ? `<div class="space-y-2">${failedCards}</div>` : ''}
 
@@ -2399,6 +3585,9 @@ function renderSection(d) {
       </div>
       <div class="flex flex-wrap gap-1.5">
         <span class="${data.dnssec ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-100 text-slate-500 border-slate-200'} border text-xs px-2.5 py-1 rounded-full font-medium">DNSSEC ${data.dnssec ? '✓' : '✗'}</span>
+        ${data.caa?.present
+          ? `<span class="bg-green-50 text-green-700 border border-green-200 text-xs px-2.5 py-1 rounded-full font-medium">✓ CAA: ${esc((data.caa.issue ?? []).slice(0,2).join(', ') || 'restricted')}</span>`
+          : `<span class="bg-slate-100 text-slate-500 border border-slate-200 text-xs px-2.5 py-1 rounded-full font-medium">✗ No CAA records</span>`}
         ${statusBadges}
       </div>
       <div class="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
@@ -2414,8 +3603,12 @@ function renderSection(d) {
             <div class="text-sm font-bold ${data.spf ? 'text-green-600' : 'text-orange-500'}">${data.spf ? '✓' : '✗'}</div>
             <div class="text-xs text-slate-400 mt-0.5">SPF</div>
           </div>
-          <div class="bg-white rounded-lg p-2 border border-slate-100">
-            <div class="text-sm font-bold ${data.dmarc ? 'text-green-600' : 'text-orange-500'}">${data.dmarc ? '✓' : '✗'}</div>
+          <div class="bg-white rounded-lg p-2 border border-slate-100">${(() => {
+            const dmarcPolicy = data.dmarc?.match(/p=([^;\s]+)/i)?.[1]?.toLowerCase();
+            const dmarcColor = !data.dmarc ? 'text-orange-500' : dmarcPolicy === 'none' ? 'text-amber-600' : 'text-green-600';
+            const dmarcLabel = !data.dmarc ? '✗' : dmarcPolicy === 'none' ? 'none' : '✓';
+            return `<div class="text-sm font-bold ${dmarcColor}">${dmarcLabel}</div>`;
+          })()}
             <div class="text-xs text-slate-400 mt-0.5">DMARC</div>
           </div>
           <div class="bg-white rounded-lg p-2 border border-slate-100">
@@ -2501,6 +3694,157 @@ function renderSection(d) {
         ${metricRows}
       </div>`;
     }
+
+  } else if (d.module === 'lighthouse' && data) {
+    const mob  = data.mobile_score;
+    const desk = data.desktop_score;
+    const scoreColor = (s) => s >= 90 ? 'text-green-700' : s >= 50 ? 'text-yellow-700' : 'text-orange-600';
+    const barColor   = (s) => s >= 90 ? 'bg-green-400'   : s >= 50 ? 'bg-yellow-400'   : 'bg-orange-400';
+    const ratingLabel = (s) => s >= 90 ? '<span class="text-[10px] font-medium border rounded px-1.5 py-0.5 text-green-700 bg-green-50 border-green-200">Good</span>'
+                              : s >= 50 ? '<span class="text-[10px] font-medium border rounded px-1.5 py-0.5 text-yellow-700 bg-yellow-50 border-yellow-200">Needs Improvement</span>'
+                              :           '<span class="text-[10px] font-medium border rounded px-1.5 py-0.5 text-orange-700 bg-orange-50 border-orange-200">Poor</span>';
+
+    const cwvRows = [
+      { abbr: 'LCP',  name: 'Largest Contentful Paint', val: data.lcp_ms,  fmt: v => (v/1000).toFixed(1)+'s', good: 2500, poor: 4000 },
+      { abbr: 'CLS',  name: 'Cumulative Layout Shift',  val: data.cls,     fmt: v => Number(v).toFixed(3),    good: 0.1,  poor: 0.25 },
+      { abbr: 'FCP',  name: 'First Contentful Paint',   val: data.fcp_ms,  fmt: v => (v/1000).toFixed(1)+'s', good: 1800, poor: 3000 },
+      { abbr: 'TBT',  name: 'Total Blocking Time',      val: data.tbt_ms,  fmt: v => Math.round(v)+'ms',      good: 200,  poor: 600  },
+      { abbr: 'SI',   name: 'Speed Index',               val: data.si_ms,   fmt: v => (v/1000).toFixed(1)+'s', good: 3400, poor: 5800 },
+    ].filter(r => r.val != null).map(r => {
+      const v = Number(r.val);
+      const isGood = v <= r.good, isPoor = v > r.poor;
+      const valColor = isGood ? 'text-green-700' : isPoor ? 'text-orange-600' : 'text-yellow-700';
+      return `<div class="flex items-center justify-between py-1.5 border-t border-slate-100 first:border-t-0">
+        <div>
+          <span class="font-semibold text-sm text-slate-800">${r.abbr}</span>
+          <span class="text-xs text-slate-400 ml-1.5">${r.name}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-bold ${valColor}">${r.fmt(v)}</span>
+          ${ratingLabel(isGood ? 90 : isPoor ? 0 : 70)}
+        </div>
+      </div>`;
+    }).join('');
+
+    detail = `<div class="mt-3 space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        ${mob != null ? `<div class="bg-slate-50 rounded-lg p-3 text-center">
+          <div class="text-2xl font-extrabold ${scoreColor(mob)}">${mob}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Mobile</div>
+          <div class="mt-1.5 bg-slate-200 rounded-full h-1.5">
+            <div class="${barColor(mob)} h-1.5 rounded-full" style="width:${mob}%"></div>
+          </div>
+        </div>` : ''}
+        ${desk != null ? `<div class="bg-slate-50 rounded-lg p-3 text-center">
+          <div class="text-2xl font-extrabold ${scoreColor(desk)}">${desk}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Desktop</div>
+          <div class="mt-1.5 bg-slate-200 rounded-full h-1.5">
+            <div class="${barColor(desk)} h-1.5 rounded-full" style="width:${desk}%"></div>
+          </div>
+        </div>` : ''}
+      </div>
+      ${cwvRows ? `<div class="space-y-0">${cwvRows}</div>` : ''}
+      ${(data.opportunities ?? 0) > 0 ? `<div class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">⚡ ${data.opportunities} performance opportunit${data.opportunities === 1 ? 'y' : 'ies'} detected — run a full Lighthouse audit for details</div>` : ''}
+      <div class="text-[10px] text-slate-400">Google PageSpeed Insights API · Lab data · Throttled mobile network</div>
+    </div>`;
+
+  } else if (d.module === 'robots_sitemap' && data) {
+    const rt = data.robots_txt ?? {};
+    const sm = data.sitemap ?? {};
+    const issues = (data.issues ?? []).slice(0, 5).map(i => `<li class="text-sm text-blue-600">• ${esc(i)}</li>`).join('');
+    const robDot = rt.exists ? (rt.blocks_all || rt.blocks_googlebot ? '🔴' : '🟢') : '🟡';
+    const smDot  = sm.exists ? '🟢' : '🔴';
+    detail = `<div class="mt-3 space-y-3">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs font-semibold text-slate-500 mb-2">robots.txt ${robDot}</div>
+          ${rt.exists
+            ? `<div class="space-y-1">
+               <div class="flex items-center gap-1.5 text-xs"><span class="${rt.blocks_all ? 'text-orange-600' : 'text-green-600'}">${rt.blocks_all ? '✗' : '✓'}</span> Block all crawlers</div>
+               <div class="flex items-center gap-1.5 text-xs"><span class="${rt.blocks_googlebot ? 'text-orange-600' : 'text-green-600'}">${rt.blocks_googlebot ? '✗' : '✓'}</span> Block Googlebot</div>
+               <div class="flex items-center gap-1.5 text-xs"><span class="${rt.sitemap_refs?.length ? 'text-green-600' : 'text-amber-600'}">${rt.sitemap_refs?.length ? '✓' : '!'}</span> Sitemap directive</div>
+               ${rt.crawl_delay ? `<div class="text-xs text-amber-600 mt-1">Crawl-Delay: ${rt.crawl_delay}s</div>` : ''}
+               </div>`
+            : '<div class="text-xs text-orange-600">Not found</div>'}
+        </div>
+        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-xs font-semibold text-slate-500 mb-2">Sitemap ${smDot}</div>
+          ${sm.exists
+            ? `<div class="space-y-1">
+               <div class="text-xs text-slate-700 truncate font-mono">${esc(sm.url?.replace(/^https?:\/\/[^/]+/, '') ?? '')}</div>
+               ${sm.page_count ? `<div class="text-xs text-slate-500">${sm.page_count} URL${sm.page_count !== 1 ? 's' : ''} found</div>` : ''}
+               <div class="flex items-center gap-1.5 text-xs"><span class="${sm.has_lastmod ? 'text-green-600' : 'text-amber-600'}">${sm.has_lastmod ? '✓' : '!'}</span> lastmod dates</div>
+               <div class="flex items-center gap-1.5 text-xs"><span class="${sm.is_index ? 'text-blue-600' : 'text-slate-400'}">${sm.is_index ? '≡' : '·'}</span> ${sm.is_index ? 'Sitemap index' : 'Single sitemap'}</div>
+               </div>`
+            : '<div class="text-xs text-orange-600">Not found</div>'}
+        </div>
+      </div>
+      ${issues ? `<ul class="space-y-1 pt-1">${issues}</ul>` : '<div class="text-xs text-green-600">✓ No crawlability issues detected</div>'}
+    </div>`;
+
+  } else if (d.module === 'broken_links' && data) {
+    const broken  = data.broken ?? [];
+    const unverifiable = data.unverifiable ?? 0;
+    const issues  = (data.issues ?? []).slice(0, 5).map(i => `<li class="text-sm text-blue-600">• ${esc(i)}</li>`).join('');
+    const brokenRows = broken.slice(0, 8).map(b => {
+      const statusColor = b.status >= 500 ? 'text-red-600' : 'text-orange-600';
+      const typeChip = b.type === 'internal'
+        ? '<span class="text-[9px] bg-red-50 text-red-600 border border-red-200 px-1.5 py-0.5 rounded-full font-semibold">internal</span>'
+        : '<span class="text-[9px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full">external</span>';
+      return `<div class="flex items-start gap-2 py-1.5 border-b border-slate-100 last:border-0">
+        <span class="${statusColor} font-mono text-xs font-semibold w-10 shrink-0">${b.status}</span>
+        ${typeChip}
+        <div class="min-w-0">
+          <div class="text-xs text-slate-700 truncate">${esc(b.text || '(no text)')}</div>
+          <div class="text-[10px] text-slate-400 font-mono truncate mt-0.5">${esc(b.url)}</div>
+        </div>
+      </div>`;
+    }).join('');
+    // Show 4-column grid when there are unverifiable links worth surfacing
+    const showUnverifiable = unverifiable > 0 && broken.length < unverifiable;
+    const gridCols = showUnverifiable ? 'grid-cols-4' : 'grid-cols-3';
+    detail = `<div class="mt-3 space-y-3">
+      <div class="grid ${gridCols} gap-2 text-center">
+        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-lg font-bold text-slate-700">${data.total_links_checked ?? 0}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Checked</div>
+        </div>
+        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-lg font-bold ${broken.length > 0 ? 'text-red-600' : 'text-green-700'}">${broken.length}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Broken</div>
+        </div>
+        <div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-lg font-bold ${(data.redirects ?? 0) > 3 ? 'text-amber-600' : 'text-slate-700'}">${data.redirects ?? 0}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Redirects</div>
+        </div>
+        ${showUnverifiable ? `<div class="bg-slate-50 rounded-lg p-3">
+          <div class="text-lg font-bold text-slate-400">${unverifiable}</div>
+          <div class="text-xs text-slate-400 mt-0.5">Blocked</div>
+        </div>` : ''}
+      </div>
+      ${showUnverifiable && broken.length === 0 ? `<div class="text-xs text-slate-500 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">⚠ ${unverifiable} link${unverifiable > 1 ? 's' : ''} could not be verified — the site blocks automated HTTP checks (bot protection). Check manually.</div>` : ''}
+      ${brokenRows ? `<div class="bg-slate-50 rounded-lg p-3"><div class="text-xs font-semibold text-slate-500 mb-2">Broken links</div>${brokenRows}</div>` : ''}
+      ${issues && broken.length > 0 ? `<ul class="space-y-1">${issues}</ul>` : broken.length === 0 && !showUnverifiable ? '<div class="text-xs text-green-600">✓ No broken links detected</div>' : ''}
+    </div>`;
+
+  } else if (d.module === 'mobile_audit' && data) {
+    const issues = (data.issues ?? []).slice(0, 5).map(i => `<li class="text-sm text-blue-600">• ${esc(i)}</li>`).join('');
+    const checks = [
+      { label: 'Viewport meta',        ok: data.has_viewport_meta,       note: data.viewport_content ? data.viewport_content.slice(0, 40) : 'Missing' },
+      { label: 'Responsive images',    ok: data.has_responsive_images,   note: data.has_responsive_images ? 'srcset detected' : 'No srcset found' },
+      { label: 'Touch icons',          ok: data.has_touch_icons,         note: data.has_touch_icons ? 'Found' : 'Not found' },
+      { label: 'Font sizes',           ok: data.font_size_ok,            note: data.font_size_ok ? 'OK' : 'Very small text detected' },
+      { label: 'Tap targets',          ok: data.tap_target_issues === 0, note: data.tap_target_issues > 0 ? `${data.tap_target_issues} small target(s)` : 'OK' },
+    ];
+    const checkRows = checks.map(c => `<div class="flex items-center gap-2 py-1.5 border-b border-slate-100 last:border-0">
+      <span class="${c.ok ? 'text-green-500' : 'text-amber-500'} text-base">${c.ok ? '✓' : '⚠'}</span>
+      <span class="text-xs text-slate-600 w-36 shrink-0">${c.label}</span>
+      <span class="text-xs text-slate-400 truncate">${esc(c.note)}</span>
+    </div>`).join('');
+    detail = `<div class="mt-3 space-y-3">
+      <div class="bg-slate-50 rounded-lg p-3">${checkRows}</div>
+      ${issues ? `<ul class="space-y-1">${issues}</ul>` : '<div class="text-xs text-green-600">✓ Mobile-ready</div>'}
+    </div>`;
 
   } else if (d.error) {
     detail = `<div class="mt-2 text-sm text-slate-400">${esc(d.error)}</div>`;
@@ -2632,32 +3976,6 @@ function wireCopyReport(data) {
   }, { once: true });
 }
 
-function renderPriorityCard(top) {
-  if (!top) return;
-  const existing = document.getElementById('priority-card');
-  if (existing) existing.remove();
-  const el = document.createElement('div');
-  el.id = 'priority-card';
-  el.className = 'rounded-xl border-2 border-orange-300 bg-gradient-to-r from-orange-50 to-amber-50 p-5 fade-in';
-  el.style.order = cardOrder('priority-card');
-  el.dataset.category = 'all';
-  el.innerHTML = `
-    <div class="flex items-start gap-3">
-      <div class="text-2xl leading-none mt-0.5" aria-hidden="true">🎯</div>
-      <div class="min-w-0 flex-1">
-        <div class="text-[10px] font-bold text-orange-600 uppercase tracking-widest mb-1">Your #1 Priority</div>
-        <div class="font-semibold text-slate-800">${esc(top.title)}</div>
-        <div class="text-xs text-slate-500 mt-1 leading-relaxed">${esc(top.why)}</div>
-        <div class="flex items-center gap-2 mt-2 flex-wrap">
-          <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-semibold border border-orange-200">Impact ${top.impact}/5</span>
-          <span class="text-xs text-slate-400">${effortTime(top.effort)}</span>
-          <button class="text-xs text-orange-600 hover:text-orange-800 underline ml-auto transition-colors" data-action="toggle-fix" data-rec-index="0">How to fix ▾</button>
-        </div>
-        <div class="hidden mt-3 what-to-do"></div>
-      </div>
-    </div>`;
-  document.getElementById('modules').appendChild(el);
-}
 
 function renderRecommendations(recs) {
   if (!recs?.length) return;
@@ -2667,7 +3985,6 @@ function renderRecommendations(recs) {
   recMap.clear();
   const slice = recs.slice(0, 8);
   slice.forEach((r, i) => recMap.set(i, r));
-  renderPriorityCard(slice[0]);
 
   const el = document.createElement('div');
   el.id = 'recs-section';
@@ -2683,7 +4000,7 @@ function renderRecommendations(recs) {
     <div class="flex items-center justify-between mb-4">
       <div>
         <div class="font-bold text-sm text-slate-900">📋 Action Plan</div>
-        <div class="text-[10px] text-slate-400 mt-0.5">Ranked by impact · check off as you fix</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">Ranked by impact-to-effort ratio · check off as you fix</div>
       </div>
       <span class="text-xs font-medium text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full" id="recs-done-count"></span>
     </div>
@@ -3047,6 +4364,10 @@ function moduleName(key) {
     domain_intel:         '🔍 Domain Intel · WHOIS & Email Security',
     crux:                 '📊 Core Web Vitals · Real-User Data (CrUX)',
     ai_content_insights:  '🧠 AI Content Insights',
+    robots_sitemap:       '🕷️ Crawlability · robots.txt & Sitemap',
+    broken_links:         '🔗 Broken Link Checker',
+    mobile_audit:         '📱 Mobile Readiness',
+    lighthouse:           '⚡ Lighthouse · Performance Scores',
     cache:                'Cache',
   };
   return names[key] || key.replace(/_/g, ' ');
@@ -3068,6 +4389,8 @@ function renderComputedSections(data) {
   const onPageData = mods.on_page_seo?.data;
   const geoData = mods.geo_predicted?.data;
   const kwData = mods.keywords?.data;
+  // Business name used in data- attributes for schema/geo generators
+  const businessName = schemaData?.org_name ?? onPageData?.site_name ?? data.domain ?? '';
 
   const addCard = (id, category, html) => {
     if (document.getElementById(id)) return;
@@ -3110,6 +4433,36 @@ function renderComputedSections(data) {
       ${titleLen > 70 ? '<p class="text-xs text-blue-500 mt-2">⚠ Title too long — Google will truncate it at ~60 chars</p>' : ''}
       ${descLen > 170 ? '<p class="text-xs text-blue-500 mt-1">⚠ Description too long — will be cut off in SERP</p>' : ''}
       ${descLen < 100 ? '<p class="text-xs text-amber-600 mt-1">⚠ Description too short — aim for 100–170 chars</p>' : ''}
+      <div class="mt-3">
+        <button id="serp-gen-btn"
+          data-title="${esc(serpTitle)}"
+          data-desc="${esc(serpDesc)}"
+          data-domain="${esc(data.domain)}"
+          class="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+          ✨ Generate optimal snippet
+        </button>
+      </div>
+      <div id="serp-gen-output" class="hidden mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Optimised snippet</div>
+        <div>
+          <div class="flex items-baseline gap-1.5 mb-0.5">
+            <span class="text-[10px] text-slate-400">Title</span>
+            <span id="serp-gen-title-len" class="text-[10px] text-slate-400"></span>
+          </div>
+          <div id="serp-gen-title" class="text-sm text-slate-800 font-medium leading-snug"></div>
+        </div>
+        <div>
+          <div class="flex items-baseline gap-1.5 mb-0.5">
+            <span class="text-[10px] text-slate-400">Description</span>
+            <span id="serp-gen-desc-len" class="text-[10px] text-slate-400"></span>
+          </div>
+          <div id="serp-gen-desc" class="text-sm text-slate-600 leading-snug"></div>
+        </div>
+        <div class="flex gap-2 pt-1">
+          <button id="serp-copy-title-btn" class="text-xs border border-slate-200 bg-white px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy title</button>
+          <button id="serp-copy-desc-btn" class="text-xs border border-slate-200 bg-white px-2 py-1 rounded hover:bg-slate-100 transition-colors">Copy description</button>
+        </div>
+      </div>
     `);
   }
 
@@ -3145,15 +4498,12 @@ function renderComputedSections(data) {
       return `<div class="flex items-center gap-2 py-0.5">${dot}<span class="text-slate-600 w-28 shrink-0">${tag}</span>${value}</div>`;
     }).join('');
 
-    // Social profiles
-    const profiles = pm.social_profiles ?? [];
-    const PLATFORM_LABELS = { 'twitter': '𝕏', 'x.com': '𝕏', 'facebook': 'f', 'linkedin': 'in', 'instagram': 'ig', 'youtube': '▶', 'tiktok': '♪', 'github': '⌥', 'pinterest': 'P', 'reddit': 'r/' };
-    const profileChips = profiles.map(url => {
-      const host = url.match(/https?:\/\/(?:www\.)?([^/]+)/i)?.[1]?.toLowerCase() ?? '';
-      const key = Object.keys(PLATFORM_LABELS).find(k => host.includes(k));
-      const label = key ? PLATFORM_LABELS[key] : host.split('.')[0];
-      return `<a href="${esc(url)}" target="_blank" rel="noopener" class="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-full font-medium transition-colors">${esc(label)} ${esc(host.replace('www.','').split('/')[0])}</a>`;
-    }).join('');
+    // Social profiles — use off_page_seo (richer: platform + handle) rather than
+    // technical_seo's page_meta.social_profiles (URL strings only, now removed)
+    const profiles = offPageData?.social_profiles ?? [];
+    const profileChips = profiles.map(s =>
+      `<a href="${esc(s.url)}" target="_blank" rel="noopener" class="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded-full font-medium transition-colors">${esc(s.platform)} <span class="opacity-60">${esc(s.handle)}</span></a>`
+    ).join('');
 
     // lang badge
     const langBadge = pm.lang
@@ -3161,7 +4511,10 @@ function renderComputedSections(data) {
       : `<span class="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">lang attribute missing</span>`;
 
     addCard('card-social-preview', 'previews', `
-      <div class="font-semibold text-sm mb-3">📱 Social Share &amp; Meta Tags</div>
+      <div class="flex items-center justify-between mb-3">
+        <div class="font-semibold text-sm">📱 Social Share &amp; Meta Tags</div>
+        ${ogImageUrl ? `<button id="og-download-btn" data-image-url="${esc(ogImageUrl)}" data-domain="${esc(data.domain)}" class="text-xs border border-slate-200 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 transition-colors text-slate-600 flex items-center gap-1.5 shrink-0">⬇ Download OG image</button>` : ''}
+      </div>
       <div class="flex gap-3 flex-wrap mb-3">
         <div class="flex-1 min-w-52 max-w-xs">
           <div class="text-[10px] text-slate-400 mb-1.5 font-medium">𝕏 Twitter / X Card</div>
@@ -3362,6 +4715,8 @@ function renderComputedSections(data) {
       : mx0.includes('sendgrid') ? 'SendGrid'
       : mx0.includes('mxroute') ? 'MXroute'
       : mx0.includes('zoho') ? 'Zoho Mail'
+      // Namecheap email forwarding service
+      : mx0.includes('registrar-servers') ? 'Namecheap'
       : mx0 ? mx0.split('.').slice(-2, -1)[0] || null : null;
 
     // Chip with optional version badge
@@ -3464,8 +4819,6 @@ function renderComputedSections(data) {
       ${allSections || '<div class="text-xs text-slate-400 py-2">No technology fingerprints detected</div>'}
       <div class="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
         <span class="text-slate-300 italic">Fingerprint-based · individual signals may vary</span>
-        ${techData.page_weight_kb > 0 ? `<span>Page size: <span class="font-medium ${techData.page_weight_kb > 500 ? 'text-amber-600' : 'text-slate-600'}">${techData.page_weight_kb} KB</span>${techData.page_weight_kb > 500 ? ' — consider optimising' : ''}</span>` : ''}
-        ${(() => { const rbs = techData.render_blocking_scripts ?? 0; return rbs > 0 ? `<span class="text-amber-600 font-medium">⚡ ${rbs} render-blocking script${rbs > 1 ? 's' : ''} — add async/defer</span>` : rbs === 0 && techData.page_weight_kb > 0 ? '<span class="text-green-600">✓ No render-blocking scripts</span>' : ''; })()}
         ${totalThirdParty > 5 ? `<span class="text-amber-600">⚠ ${totalThirdParty} 3rd-party domains — review for privacy impact</span>` : totalThirdParty > 0 ? `<span>${totalThirdParty} 3rd-party domains</span>` : ''}
       </div>
     `);
@@ -3480,6 +4833,8 @@ function renderComputedSections(data) {
         : dns.mx[0].exchange.includes('outlook') || dns.mx[0].exchange.includes('microsoft') ? 'Microsoft 365'
         : dns.mx[0].exchange.includes('protonmail') ? 'ProtonMail'
         : dns.mx[0].exchange.includes('mailgun') ? 'Mailgun'
+        // Namecheap email forwarding service (eforward.registrar-servers.com)
+        : dns.mx[0].exchange.includes('registrar-servers') ? 'Namecheap'
         : dns.mx[0].exchange.split('.').slice(-2, -1)[0] || 'Custom')
       : 'None';
     const nsProvider = dns.ns?.[0]
@@ -3487,6 +4842,10 @@ function renderComputedSections(data) {
         : dns.ns[0].includes('awsdns') ? 'AWS Route 53'
         : dns.ns[0].includes('google') ? 'Google Cloud DNS'
         : dns.ns[0].includes('azure') ? 'Azure DNS'
+        // Hostinger's DNS parking service — live sites using Hostinger nameservers
+        : dns.ns[0].includes('dns-parking') ? 'Hostinger DNS'
+        // Namecheap's registrar nameservers
+        : dns.ns[0].includes('registrar-servers') ? 'Namecheap DNS'
         : dns.ns[0].split('.').slice(-2, -1)[0] || 'Custom')
       : 'Unknown';
     addCard('card-dns', 'site_intel', `
@@ -3527,7 +4886,7 @@ function renderComputedSections(data) {
       ...(fonts.custom_fonts ?? []).map(f => ({ name: f, source: 'Custom', color: 'slate' })),
       ...(fonts.adobe_fonts ? [{ name: 'Adobe Fonts', source: 'Adobe', color: 'red' }] : []),
     ];
-    const perfNote = fonts.google_fonts.length > 0
+    const perfNote = (fonts.google_fonts ?? []).length > 0
       ? '<div class="text-xs text-amber-600 mt-2">⚠ Google Fonts add external DNS lookups — consider self-hosting or <a href="https://bunny.net/fonts" target="_blank" class="underline">Bunny Fonts</a> for privacy & speed.</div>'
       : fonts.system_only
       ? '<div class="text-xs text-green-700 mt-2">✓ System fonts only — zero external font requests, fastest possible load</div>'
@@ -3582,15 +4941,62 @@ function renderComputedSections(data) {
       <pre id="llms-gen-text" class="text-xs text-green-300 whitespace-pre-wrap leading-relaxed overflow-x-auto" style="max-height:300px"></pre>
     </div>
     <div class="flex gap-2 flex-wrap">
-      <button id="llms-gen-btn" class="text-xs bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium"
-        data-domain="${esc(data.domain)}" data-vertical="${esc(vertical)}"
-        data-keywords="${esc(keywords.join(','))}" data-schemas="${esc(schemas.join(','))}">
-        ✨ Generate llms.txt
-      </button>
-      ${techData?.llms_txt_present ? `<button id="llms-view-btn" class="text-xs border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition-colors" data-domain="${esc(data.domain)}">👁 View existing</button>` : ''}
+      ${techData?.llms_txt_present
+        ? `<button id="llms-view-btn" class="text-xs bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium" data-domain="${esc(data.domain)}">👁 View existing</button>
+           <button id="llms-gen-btn" class="text-xs border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition-colors text-slate-600"
+             data-domain="${esc(data.domain)}" data-vertical="${esc(vertical)}"
+             data-keywords="${esc(keywords.join(','))}" data-schemas="${esc(schemas.join(','))}">↻ Re-generate</button>`
+        : `<button id="llms-gen-btn" class="text-xs bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium"
+             data-domain="${esc(data.domain)}" data-vertical="${esc(vertical)}"
+             data-keywords="${esc(keywords.join(','))}" data-schemas="${esc(schemas.join(','))}">✨ Generate llms.txt</button>`
+      }
       <button id="llms-copy-btn" class="hidden text-xs border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition-colors">Copy</button>
     </div>
   `);
+
+  // ── Schema JSON-LD Generator ──────────────────────────────────────────────
+  {
+    const schemaTypes = ['LocalBusiness','Restaurant','MedicalBusiness','LegalService','HomeAndConstructionBusiness','FinancialService','Store','SoftwareApplication','WebSite','Organization','NewsArticle','BlogPosting'];
+    const opts = schemaTypes.map(t => `<option value="${t}"${t === 'LocalBusiness' ? ' selected' : ''}>${t}</option>`).join('');
+    addCard('card-schema-gen', 'previews', `
+      <div class="font-semibold text-sm mb-2">🔬 JSON-LD Schema Generator
+        <span class="text-xs text-slate-400 font-normal ml-2">AI-written structured data</span>
+      </div>
+      <div class="text-xs text-slate-500 mb-3">Generate ready-to-paste JSON-LD markup — paste it inside a <code>&lt;script type="application/ld+json"&gt;</code> tag.</div>
+      <div class="flex gap-2 mb-3 flex-wrap">
+        <select id="schema-type-select" class="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-700">${opts}</select>
+        <button id="schema-gen-btn"
+          data-domain="${esc(data.domain)}"
+          data-name="${esc(businessName)}"
+          data-city="${esc(data.city || '')}"
+          data-country="${esc(data.country || '')}"
+          class="text-xs bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium">✨ Generate schema</button>
+      </div>
+      <div id="schema-gen-output" class="hidden border border-slate-200 rounded-lg bg-slate-900 p-3">
+        <pre id="schema-gen-text" class="text-xs text-green-300 whitespace-pre-wrap leading-relaxed overflow-x-auto" style="max-height:320px"></pre>
+      </div>
+      <button id="schema-copy-btn" class="hidden mt-2 text-xs border border-slate-200 px-3 py-2 rounded-lg hover:bg-slate-50 transition-colors">Copy</button>
+    `);
+  }
+
+  // ── AI Entity Visibility Probe ────────────────────────────────────────────
+  {
+    addCard('card-geo-probe', 'geo', `
+      <div class="flex items-center justify-between mb-2">
+        <div class="font-semibold text-sm">🔭 AI Entity Visibility
+          <span class="text-xs text-slate-400 font-normal ml-2">Free · powered by Wikipedia/DuckDuckGo</span>
+        </div>
+        <button id="geo-probe-btn"
+          data-domain="${esc(data.domain)}"
+          data-name="${esc(businessName)}"
+          class="text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition-colors font-medium shrink-0">Check visibility</button>
+      </div>
+      <div class="text-xs text-slate-500 mb-3">Checks whether AI engines (ChatGPT, Gemini, Claude) have been trained on structured knowledge about this brand. Wikipedia/Wikidata presence is the primary signal.</div>
+      <div id="geo-probe-output" class="hidden rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <div id="geo-probe-result"></div>
+      </div>
+    `);
+  }
 
   // ── AI Content Insights ───────────────────────────────────────────────────
   // renderSection() has no specific handler for ai_content_insights, so it creates a title-only
@@ -3760,8 +5166,8 @@ function renderComputedSections(data) {
   const pageKb = techData?.page_weight_kb;
   if (comp !== undefined || domCount !== undefined) {
     const compOk = comp?.enabled;
-    const domOk = domCount <= 1500;
-    const sizeOk = pageKb <= 150;
+    const domOk = domCount == null || domCount <= 1500;
+    const sizeOk = pageKb == null || pageKb <= 150;
     const speedPassed = [compOk, domOk, sizeOk].filter(Boolean).length;
     addCard('card-speed', 'seo', `
       <div class="flex items-center justify-between mb-3">
@@ -3793,7 +5199,6 @@ function renderComputedSections(data) {
           <span class="text-base">${sizeOk ? '✓' : '⚠'}</span>
         </div>
       </div>
-      ${techData?.render_blocking_scripts > 0 ? `<div class="mt-2 text-[10px] text-amber-600 bg-amber-50 px-2.5 py-1.5 rounded-lg">⚠ ${techData.render_blocking_scripts} render-blocking script${techData.render_blocking_scripts > 1 ? 's' : ''} — add async/defer attributes</div>` : ''}
     `);
   }
 
@@ -3801,7 +5206,7 @@ function renderComputedSections(data) {
   const hasViewport = techData?.checks?.find(c => c.name === 'Mobile viewport meta')?.passed;
   const hasMQ = techData?.has_media_queries;
   if (hasViewport !== undefined || hasMQ !== undefined) {
-    const viewportContent = techData?.page_meta?.title ? 'width=device-width, initial-scale=1' : null;
+    const viewportContent = mods.mobile_audit?.data?.viewport_content ?? (hasViewport ? 'width=device-width, initial-scale=1' : null);
     addCard('card-mobile', 'seo', `
       <div class="font-semibold text-sm mb-3">📱 Mobile Usability</div>
       <div class="space-y-2">
@@ -3835,7 +5240,9 @@ function renderComputedSections(data) {
 
   // ── Email & Ads.txt ───────────────────────────────────────────────────────
   const hasAdsTxt = techData?.ads_txt;
-  const spfRecord = techData?.spf_record;
+  // SPF now read from off_page_seo (which already does a DNS TXT lookup for MX/DKIM/DMARC)
+  // rather than technical_seo's standalone DNS fetch — one fewer subrequest per audit.
+  const spfRecord = offPageData?.email_security?.spf_record; // string | null | undefined
   const plaintextEmails = techData?.plaintext_emails ?? 0;
   if (hasAdsTxt !== undefined || spfRecord !== undefined || plaintextEmails > 0) {
     addCard('card-email-ads', 'seo', `
@@ -4019,10 +5426,9 @@ function renderComputedSections(data) {
     `);
   }
 
-  // ── Plain-English Report Card ─────────────────────────────────────────────
+  // ── Key Findings Card ────────────────────────────────────────────────────
   (() => {
     const aiInsights = mods.ai_content_insights?.data;
-    const recs = (mods.recommendations?.data ?? []).slice(0, 3);
 
     // Business type detection
     const AI_BUILDER_CMS = new Set(['Lovable', 'Bolt', 'v0 (Vercel)', 'Framer', 'Webflow']);
@@ -4069,16 +5475,20 @@ function renderComputedSections(data) {
     if (wc >= 600) positives.push('Good content depth — enough text for search engines to understand your topic');
     else if (wc >= 300) positives.push('Reasonable content length — some pages could use more detail');
     if ((contentData?.h2_count ?? 0) >= 2) positives.push('Well-structured content — headings help search engines parse topics');
-    if ((contentData?.alt_coverage_pct ?? 0) >= 80 && (contentData?.image_count ?? 0) > 0) positives.push('Images have descriptive labels — helps accessibility and image search');
+    // Use the raw-HTML image_audit (techData) rather than content_quality's stripped count —
+    // content_quality strips nav/footer before counting, which can overstate coverage when
+    // images missing alt happen to live in those sections.
+    const imgAudit = techData?.image_audit;
+    if ((imgAudit?.missing_alt ?? 1) === 0 && (imgAudit?.total ?? 0) > 0) positives.push('Images have descriptive labels — helps accessibility and image search');
     if (hasAnySchema) positives.push('Structured data present — AI engines can extract key business facts');
     if (techData?.llms_txt_present) positives.push('llms.txt file found — AI search engines have a content index to work from');
     if ((techData?.sitemap_url_count ?? 0) > 0) positives.push('XML sitemap found — search engines can map all your pages');
     if (authData?.wikidata_id) positives.push('Wikidata entity — AI engines have structured knowledge about this business');
     if (authData?.wikipedia) positives.push('Wikipedia presence — strong authority signal for AI citation');
-    if ((authData?.backlink_sample_count ?? 0) >= 10) positives.push(`${authData.backlink_sample_count}+ websites link here — builds domain authority`);
+    if ((authData?.indexed_page_count ?? 0) >= 10) positives.push(`${authData.indexed_page_count}+ pages indexed in Common Crawl — broad web footprint`);
     if (contentData?.has_email && contentData?.has_phone) positives.push('Contact information visible — builds visitor trust and local SEO signals');
     else if (contentData?.has_email) positives.push('Email address visible on site — helps visitors and search engines find you');
-    if (techData?.checks?.find(c => c.name === 'Open Graph tags present')?.passed) positives.push('Social preview tags set — links look professional when shared on social media');
+    if (techData?.checks?.find(c => c.name === 'Open Graph tags complete')?.passed) positives.push('Social preview tags set — links look professional when shared on social media');
 
     // Issues — by severity
     const critical = [], important = [], minor = [];
@@ -4091,14 +5501,13 @@ function renderComputedSections(data) {
     if (!hasAnySchema) important.push('No structured data — search and AI engines cannot reliably extract business name, address, or services');
     if (!techData?.llms_txt_present) important.push('No llms.txt file — AI engines like Perplexity and ChatGPT have no content index to reference');
     if (wc >= 50 && wc < 300) important.push(`Very little content (${wc} words) — search engines need at least 300 words to understand what you offer`);
-    if (!authData?.wikidata_id) important.push('No Wikidata entry — AI engines are significantly less likely to cite businesses without a knowledge graph record');
-    if (techData?.checks?.find(c => c.name === 'Open Graph tags present' && !c.passed)) important.push('No social preview tags — shared links show no image or description on social media');
+    if (techData?.checks?.find(c => c.name === 'Open Graph tags complete' && !c.passed)) important.push('No social preview tags — shared links show no image or description on social media');
     if ((techData?.sitemap_url_count ?? 0) === 0) important.push('No XML sitemap — search engines must discover pages by guessing, and may miss some');
     if (wc >= 300 && wc < 600) important.push(`Content is thin (${wc} words) — aim for 600+ words on key pages to compete for rankings`);
     if ((contentData?.h2_count ?? 0) === 0 && wc >= 100) important.push('No section headings — content lacks structure, making it harder for search engines to parse topics');
 
-    const imgMissing = (contentData?.image_count ?? 0) - (contentData?.images_with_alt ?? 0);
-    if (imgMissing > 0 && (contentData?.alt_coverage_pct ?? 100) < 80) minor.push(`${imgMissing} image${imgMissing > 1 ? 's' : ''} missing descriptive text — screen readers and image search cannot interpret these`);
+    const imgMissing = imgAudit?.missing_alt ?? 0;
+    if (imgMissing > 0) minor.push(`${imgMissing} image${imgMissing > 1 ? 's' : ''} missing descriptive text — screen readers and image search cannot interpret these`);
     if (isLocal && !contentData?.has_phone) minor.push('No phone number on homepage — local customers often look for this before visiting');
     if (isLocal && !contentData?.has_address) minor.push('No address or location text — weakens local search and map listing signals');
     if (!contentData?.lang_attr) minor.push('Language not declared on the page — browsers and search engines cannot auto-detect your target language');
@@ -4122,28 +5531,18 @@ function renderComputedSections(data) {
       ...minor.map(t => `<li class="flex gap-2 items-start"><span class="shrink-0 mt-0.5">🟢</span><span class="text-slate-600">${esc(t)}</span></li>`),
     ].join('');
 
-    const recHtml = recs.map((r, i) => `
-      <div class="flex gap-3 items-start py-2.5 ${i < recs.length - 1 ? 'border-b border-slate-100' : ''}">
-        <div class="w-5 h-5 shrink-0 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center mt-0.5">${i + 1}</div>
-        <div class="flex-1 min-w-0">
-          <div class="text-xs font-semibold text-slate-800 leading-snug">${esc(r.title)}</div>
-          <div class="text-[10px] text-slate-400 mt-0.5">${effortTime(r.effort)}</div>
-        </div>
-        <div class="shrink-0 text-[10px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">Impact ${r.impact}/5</div>
-      </div>`).join('');
-
     const bizDesc = aiInsights?.business_context?.description;
 
     addCard('plain-english-report', 'geo', `
       <div class="flex items-start justify-between mb-3">
         <div class="min-w-0">
-          <div class="font-semibold text-sm">📋 Plain-English Report</div>
+          <div class="font-semibold text-sm">📋 Key Findings</div>
           ${bizDesc ? `<div class="text-xs text-slate-500 mt-0.5 leading-relaxed">${esc(bizDesc.slice(0, 160))}</div>` : ''}
         </div>
         <span class="text-[10px] text-slate-400 shrink-0 ml-3 mt-0.5 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200">${esc(siteType)}</span>
       </div>
 
-      ${geoData?.citation_rate != null ? `
+      ${(geoData?.citation_rate != null && geoData?.is_reliable !== false) ? `
       <div class="flex items-center gap-3 mb-4 p-2.5 bg-slate-50 rounded-lg">
         <div class="text-xs text-slate-500 shrink-0">AI citation probability</div>
         ${likelySPA
@@ -4163,18 +5562,8 @@ function renderComputedSections(data) {
         </div>` : ''}
       </div>
 
-      ${recHtml ? `<div class="mt-4 pt-4 border-t border-slate-100">
-        <div class="text-[10px] font-semibold uppercase tracking-wide text-blue-700 mb-1">🎯 Top actions</div>
-        <div>${recHtml}</div>
-      </div>` : ''}
-
-      <div class="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-        <div class="text-[10px] text-slate-400">Made a change from the list above?</div>
-        <button data-action="reaudit"
-          class="text-[10px] font-semibold text-orange-600 hover:text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
-          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-          Run fresh audit
-        </button>
+      <div class="mt-4 pt-3 border-t border-slate-100">
+        <div class="text-[10px] text-slate-400">Made improvements? Use <strong>Start Fresh</strong> in the top bar to re-run for updated scores.</div>
       </div>
     `);
   })();
@@ -4299,8 +5688,8 @@ async function runCompetitorComparison() {
       <div class="border border-slate-200 rounded-xl overflow-hidden bg-white">
         <div class="grid grid-cols-[1fr_80px_80px_60px] gap-2 px-4 py-2 bg-slate-50 border-b border-slate-200 text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
           <div>Metric</div>
-          <div class="text-center truncate" title="${esc(currentDomain)}">${esc(currentDomain.length > 12 ? currentDomain.slice(0,11)+'…' : currentDomain)}</div>
-          <div class="text-center truncate" title="${esc(raw)}">${esc(raw.length > 12 ? raw.slice(0,11)+'…' : raw)}</div>
+          <div class="text-center truncate" title="${esc(currentDomain)}">${esc(abbrevDomain(currentDomain))}</div>
+          <div class="text-center truncate" title="${esc(raw)}">${esc(abbrevDomain(raw))}</div>
           <div class="text-center">Δ</div>
         </div>
         <div class="px-4">
@@ -4321,6 +5710,16 @@ async function runCompetitorComparison() {
     btn.disabled = false;
     btn.textContent = 'Compare →';
   }
+}
+
+// Abbreviate a domain for display in a narrow column, preserving the TLD suffix so that
+// domains sharing a long common prefix (e.g. "wedohalal.com" vs "wedohalal.pages.dev")
+// are still distinguishable at a glance. Up to 15 chars pass through unchanged; longer
+// domains get "firstN…lastM" treatment so the TLD region remains visible.
+function abbrevDomain(d, maxLen = 15) {
+  if (d.length <= maxLen) return d;
+  const keep = Math.floor((maxLen - 1) / 2);   // chars to keep on each side of "…"
+  return d.slice(0, keep) + '…' + d.slice(-(maxLen - keep - 1));
 }
 
 function generousScale(raw) {
@@ -4373,8 +5772,8 @@ function computeEeat({ techData, schemaData, authData, contentData, offPageData,
   if ((authData?.domain_age_years ?? 0) >= 10) auth += 25;
   else if ((authData?.domain_age_years ?? 0) >= 5) auth += 20;
   else if ((authData?.domain_age_years ?? 0) >= 2) auth += 10;
-  if ((authData?.backlink_sample_count ?? 0) >= 50) auth += 15;
-  else if ((authData?.backlink_sample_count ?? 0) >= 10) auth += 7;
+  if ((authData?.indexed_page_count ?? 0) >= 50) auth += 15;
+  else if ((authData?.indexed_page_count ?? 0) >= 10) auth += 7;
   if ((offPageData?.social_profiles?.length ?? 0) >= 3) auth += 10;
   if (offPageData?.brand_presence?.has_knowledge_panel) auth += 10;
   const authority = generousScale(Math.min(100, auth));

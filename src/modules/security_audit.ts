@@ -8,6 +8,14 @@ export interface SecurityAuditResult {
   tests_quantity: number;
   tests: SecurityTest[];
   issues: string[];
+  hsts_preload_status: 'preloaded' | 'pending' | 'unknown' | 'rejected' | 'removed' | null;
+  security_txt: {
+    present: boolean;
+    contact: string | null;
+    expires: string | null;
+    is_expired: boolean;
+  } | null;
+  permissions_policy: string | null;
 }
 
 export interface SecurityTest {
@@ -33,6 +41,7 @@ const TEST_NAMES: Record<string, string> = {
   subresourceIntegrity:        'Subresource Integrity (SRI)',
   xContentTypeOptions:         'X-Content-Type-Options',
   crossOriginOpenerPolicy:     'Cross-Origin Opener Policy (COOP)',
+  permissionsPolicy:           'Permissions Policy',
 };
 
 const TEST_DESCRIPTIONS: Record<string, string> = {
@@ -108,7 +117,12 @@ function analyzeHeaders(html: string, headers: Headers): SecurityTest[] {
   let cookieStr = '';
 
   headers.forEach((v, k) => { hdrs[k.toLowerCase()] = v; });
-  cookieStr = hdrs['set-cookie'] ?? '';
+  // Use getAll() if available (CF Workers) to avoid joining multiple Set-Cookie headers
+  // into one comma-separated string (which breaks parsing of cookies with dates in values)
+  const rawCookies: string[] = typeof (headers as any).getAll === 'function'
+    ? (headers as any).getAll('set-cookie') as string[]
+    : (hdrs['set-cookie'] ? [hdrs['set-cookie']] : []);
+  cookieStr = rawCookies.join('\n'); // use newline as safe separator for the split below
   const htmlBody = html.slice(0, 12000);
 
   const csp  = hdrs['content-security-policy'] ?? '';
@@ -203,7 +217,8 @@ function analyzeHeaders(html: string, headers: Headers): SecurityTest[] {
   // ── 9. Cookies ───────────────────────────────────────────────────────────
   {
     let passed = true; let modifier = 0; let result = 'cookies-not-found'; let detail = 'No Set-Cookie headers on homepage (may be set during login)';
-    const cookies = cookieStr ? cookieStr.split(/,(?=[^;]+=[^;]+)/).map(c => c.trim()) : [];
+    // Split on newlines (from getAll) or fall back to comma-heuristic for concatenated strings
+    const cookies = cookieStr ? cookieStr.split(/\n|,(?=[^;]+=[^;]+)/).map(c => c.trim()).filter(Boolean) : [];
     if (cookies.length > 0) {
       const missingSecure   = cookies.some(c => !/;\s*secure/i.test(c));
       const missingHttpOnly = cookies.some(c => !/;\s*httponly/i.test(c));
@@ -242,6 +257,24 @@ function analyzeHeaders(html: string, headers: Headers): SecurityTest[] {
     tests.push({ key: 'subresourceIntegrity', name: TEST_NAMES.subresourceIntegrity, passed, score_modifier: modifier, result, severity: getSeverity(modifier, passed), description: TEST_DESCRIPTIONS.subresourceIntegrity, recommendation: passed ? '' : TEST_RECOMMENDATIONS.subresourceIntegrity, detail });
   }
 
+  // ── 11. Permissions-Policy ────────────────────────────────────────────────
+  {
+    const permPolicy = hdrs['permissions-policy'] ?? '';
+    const passed = !!permPolicy;
+    const modifier = passed ? 0 : -3;
+    tests.push({
+      key: 'permissionsPolicy',
+      name: TEST_NAMES.permissionsPolicy,
+      passed,
+      score_modifier: modifier,
+      result: passed ? 'permissions-policy-implemented' : 'permissions-policy-not-implemented',
+      severity: getSeverity(modifier, passed),
+      description: 'Controls which browser APIs (camera, microphone, geolocation, payment) can be used on this page and in embedded iframes.',
+      recommendation: passed ? '' : 'Add header: Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=() — blocks unused browser APIs from being accessed by scripts.',
+      detail: passed ? `Value: ${permPolicy.slice(0, 120)}${permPolicy.length > 120 ? '…' : ''}` : 'Header not present',
+    });
+  }
+
   // Sort: critical → high → medium → low → pass
   const order = { critical: 0, high: 1, medium: 2, low: 3, pass: 4 };
   tests.sort((a, b) => order[a.severity] - order[b.severity]);
@@ -250,14 +283,62 @@ function analyzeHeaders(html: string, headers: Headers): SecurityTest[] {
 }
 
 
+// ── HSTS Preload status ───────────────────────────────────────────────────────
+async function fetchHstsPreloadStatus(domain: string): Promise<'preloaded' | 'pending' | 'unknown' | 'rejected' | 'removed' | null> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://hstspreload.org/api/v2/status?domain=${encodeURIComponent(domain)}`,
+      { timeoutMs: 5000 }
+    );
+    if (!res.ok) return null;
+    const data = await res.json() as { status?: string };
+    const s = data.status ?? '';
+    if (['preloaded', 'pending', 'unknown', 'rejected', 'removed'].includes(s)) {
+      return s as 'preloaded' | 'pending' | 'unknown' | 'rejected' | 'removed';
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── security.txt ──────────────────────────────────────────────────────────────
+async function fetchSecurityTxt(domain: string): Promise<SecurityAuditResult['security_txt']> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://${domain}/.well-known/security.txt`,
+      { timeoutMs: 4000 }
+    );
+    if (!res.ok) return null;
+    const text = await res.text();
+    const contactMatch = text.match(/^Contact:\s*(.+)$/im);
+    const expiresMatch = text.match(/^Expires:\s*(.+)$/im);
+    const contact = contactMatch?.[1]?.trim() ?? null;
+    const expiresStr = expiresMatch?.[1]?.trim() ?? null;
+    let is_expired = false;
+    if (expiresStr) {
+      try {
+        is_expired = new Date(expiresStr).getTime() < Date.now();
+      } catch { /* ignore invalid date */ }
+    }
+    return { present: true, contact, expires: expiresStr, is_expired };
+  } catch {
+    return null;
+  }
+}
+
 // ── Main entry ────────────────────────────────────────────────────────────────
 export async function runSecurityAudit(domain: string, html: string, headers: Headers): Promise<SecurityAuditResult> {
   const issues: string[] = [];
 
-  const [obs, allTests] = await Promise.all([
+  const [obs, allTests, hstsPreloadStatus, securityTxt] = await Promise.all([
     fetchObservatoryGrade(domain).catch(() => null),
     Promise.resolve(analyzeHeaders(html, headers)).catch(() => [] as SecurityTest[]),
+    fetchHstsPreloadStatus(domain).catch(() => null),
+    fetchSecurityTxt(domain).catch(() => null),
   ]);
+
+  const permissionsPolicy = headers.get('permissions-policy') ?? null;
 
   const passed    = allTests.filter(t =>  t.passed).length;
   const failed    = allTests.filter(t => !t.passed).length;
@@ -299,5 +380,8 @@ export async function runSecurityAudit(domain: string, html: string, headers: He
     tests_quantity: allTests.length,
     tests: allTests,
     issues,
+    hsts_preload_status: hstsPreloadStatus,
+    security_txt: securityTxt,
+    permissions_policy: permissionsPolicy,
   };
 }

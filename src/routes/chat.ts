@@ -2,7 +2,15 @@ import type { Env } from '../lib/types';
 import { CHAT_SYSTEM } from '../prompts';
 
 export async function handleChat(req: Request, auditId: string, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const body = await req.json() as { question?: string; session_id?: string };
+  let body: { question?: string; session_id?: string };
+  try {
+    body = await req.json() as { question?: string; session_id?: string };
+  } catch {
+    return new Response('{"error":"invalid JSON body"}', {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const question = body.question?.trim() ?? '';
   const sessionId = body.session_id ?? crypto.randomUUID();
 

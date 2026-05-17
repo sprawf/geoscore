@@ -1,9 +1,12 @@
 import type { Env } from '../lib/types';
 
 export async function handleFix(req: Request, env: Env): Promise<Response> {
-  const body = await req.json() as {
-    domain?: string; title?: string; why?: string; template_id?: string;
-  };
+  let body: { domain?: string; title?: string; why?: string; template_id?: string };
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    return new Response('{"error":"invalid JSON body"}', { status: 400 });
+  }
   const domain = (body.domain ?? '').trim();
   const title  = (body.title  ?? '').trim();
   const why    = (body.why    ?? '').trim();

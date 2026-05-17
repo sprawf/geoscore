@@ -17,9 +17,9 @@ Respond as JSON only — no markdown, no extra text:
 {"cited": boolean, "confidence": number, "reasoning": string}
 `.trim();
 
-export const buildCitationPrompt = (query: string, pageContent: string) => `
+export const buildCitationPrompt = (query: string, pageContent: string, authorityCtx = '') => `
 QUERY: ${query}
-
+${authorityCtx ? `\nDOMAIN AUTHORITY SIGNALS (factor into your confidence):\n${authorityCtx}\n` : ''}
 CANDIDATE PAGE CONTENT:
 ${pageContent.slice(0, 3500)}
 
@@ -103,4 +103,5 @@ export const RECOMMENDATION_TEMPLATES = [
   { id: 'structured_pricing', label: 'Add structured pricing information to service pages' },
   { id: 'location_pages', label: 'Create dedicated location/neighborhood pages' },
   { id: 'breadcrumb_schema', label: 'Add BreadcrumbList schema to all inner pages' },
+  { id: 'data_quality_warning', label: 'Data quality notice — audit results may be incomplete or inaccurate' },
 ];

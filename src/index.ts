@@ -1,13 +1,17 @@
 import type { Env } from './lib/types';
 import { fetchWithTimeout } from './lib/http';
 import { auditRateLimit, searchRateLimit, getClientIp } from './lib/rate-limit';
-import { getCachedAudit } from './lib/cache';
+import { getCachedAudit, cacheKey } from './lib/cache';
 import { handleSearch } from './routes/search';
 import { handleAudit, normaliseDomain } from './routes/audit';
+import { runLighthouse } from './modules/lighthouse';
 import { handleChat } from './routes/chat';
 import { handleFix } from './routes/fix';
 import { handleBusinesses } from './routes/businesses';
 import { handleLlmsGen } from './routes/llms_gen';
+import { handleSerpGen } from './routes/serp_gen';
+import { handleSchemaGen } from './routes/schema_gen';
+import { handleGeoProbe } from './routes/geo_probe';
 import { handleHistory } from './routes/history';
 import { handleFeedback, handleLearningAdmin } from './routes/feedback';
 
@@ -32,6 +36,9 @@ export default {
       return handleHealth(env);
     }
 
+    if (pathname === '/api/llm-test' && req.method === 'GET') {
+      return handleLlmTest(env);
+    }
 
     if (pathname === '/api/stats' && req.method === 'GET') {
       try {
@@ -80,7 +87,7 @@ export default {
       const raw = decodeURIComponent(pathname.replace('/api/audit/', '').replace('/cache', ''));
       const domain = normaliseDomain(raw);
       if (!domain || domain.length < 3 || !domain.includes('.')) return jsonError('Invalid domain', 400);
-      await env.AUDIT_KV.delete(`recent:${domain}`);
+      await env.AUDIT_KV.delete(cacheKey(domain));
       return new Response(JSON.stringify({ ok: true }), {
         headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
       });
@@ -91,6 +98,10 @@ export default {
       const domain = normaliseDomain(raw);
       if (!domain || domain.length < 3 || !domain.includes('.')) {
         return jsonError('Invalid domain', 400);
+      }
+      // ?fresh=1 — atomically bust cache then re-audit (no separate DELETE call needed)
+      if (url.searchParams.get('fresh') === '1') {
+        await env.AUDIT_KV.delete(cacheKey(domain));
       }
       // Cache hits are free — don't consume rate limit quota
       const cached = await getCachedAudit(env, domain);
@@ -113,6 +124,15 @@ export default {
 
     if (pathname === '/api/llms-gen' && req.method === 'POST') {
       return handleLlmsGen(req, env);
+    }
+    if (pathname === '/api/serp-gen' && req.method === 'POST') {
+      return handleSerpGen(req, env);
+    }
+    if (pathname === '/api/schema-gen' && req.method === 'POST') {
+      return handleSchemaGen(req, env);
+    }
+    if (pathname === '/api/geo-probe' && req.method === 'POST') {
+      return handleGeoProbe(req, env);
     }
 
     // Proxy llms.txt fetches — direct browser fetch is blocked by CORS on most sites
@@ -138,6 +158,96 @@ export default {
       }
     }
 
+    // ── Lighthouse / PageSpeed Insights — runs in its own Worker invocation ──
+    // Keeps subrequest count separate from the main audit's parallel fetch budget.
+    if (pathname === '/api/lighthouse' && req.method === 'GET') {
+      const raw = url.searchParams.get('domain') ?? '';
+      const domain = normaliseDomain(raw);
+      if (!domain || !domain.includes('.')) return jsonError('Invalid domain', 400);
+      if (!env.PAGESPEED_API_KEY) return jsonError('Lighthouse not configured', 503);
+      try {
+        const result = await runLighthouse(domain, env.PAGESPEED_API_KEY);
+        return new Response(JSON.stringify({ ok: true, data: result }), {
+          headers: { 'Content-Type': 'application/json', ...CORS_HEADERS, 'Cache-Control': 'public, max-age=300' },
+        });
+      } catch (err: unknown) {
+        return new Response(JSON.stringify({ ok: false, error: String(err) }), {
+          status: 502, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+    }
+
+    // Proxy OG / social-card images — avoids CORS block when downloading from the browser
+    if (pathname === '/api/fetch-image' && req.method === 'GET') {
+      const imageUrl = url.searchParams.get('url') ?? '';
+      // Validate: must be http(s), must not point to RFC-1918/loopback/link-local IPs
+      const _ssrfBad = (() => {
+        if (!/^https?:\/\//i.test(imageUrl)) return true;
+        try {
+          const _u = new URL(imageUrl);
+          const h = _u.hostname;
+          // Block IP literals that are private/loopback/link-local
+          if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|::1|fd|fc)/.test(h)) return true;
+        } catch { return true; }
+        return false;
+      })();
+      if (_ssrfBad) {
+        return new Response(JSON.stringify({ error: 'invalid url' }), {
+          status: 400, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+      try {
+        const imgRes = await fetchWithTimeout(imageUrl, {
+          timeoutMs: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SiteAuditBot/1.0)' },
+        });
+        if (!imgRes.ok) throw new Error(`upstream ${imgRes.status}`);
+        const body = await imgRes.arrayBuffer();
+        const ct = imgRes.headers.get('content-type') || 'image/jpeg';
+        return new Response(body, {
+          headers: {
+            'Content-Type': ct,
+            'Cache-Control': 'public, max-age=3600',
+            ...CORS_HEADERS,
+          },
+        });
+      } catch {
+        return new Response(JSON.stringify({ error: 'Could not fetch image' }), {
+          status: 502, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+      }
+    }
+
+    // Shareable report: GET /api/share/:domain  — returns the latest complete audit's full JSON
+    if (pathname.startsWith('/api/share/') && req.method === 'GET') {
+      const raw = decodeURIComponent(pathname.replace('/api/share/', ''));
+      const domain = normaliseDomain(raw);
+      if (!domain || domain.length < 3) return jsonError('Invalid domain', 400);
+      try {
+        const biz = await env.DB.prepare(
+          'SELECT id FROM businesses WHERE domain = ? LIMIT 1'
+        ).bind(domain).first<{ id: number }>();
+        if (!biz) return new Response(JSON.stringify({ error: 'No audit found for this domain' }), {
+          status: 404, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+        const row = await env.DB.prepare(
+          `SELECT full_json FROM audits WHERE business_id = ? AND status = 'complete' ORDER BY created_at DESC LIMIT 1`
+        ).bind(biz.id).first<{ full_json: string }>();
+        if (!row?.full_json) return new Response(JSON.stringify({ error: 'No complete audit found' }), {
+          status: 404, headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+        });
+        return new Response(row.full_json, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=1800',
+            ...CORS_HEADERS,
+          },
+        });
+      } catch {
+        return jsonError('Database error', 500);
+      }
+    }
+
     if (pathname.startsWith('/api/history/') && req.method === 'GET') {
       const raw = decodeURIComponent(pathname.replace('/api/history/', ''));
       const domain = normaliseDomain(raw);
@@ -148,7 +258,7 @@ export default {
     // ── Compare endpoint: GET /api/compare?domains=a.com,b.com ──────────────
     if (pathname === '/api/compare' && req.method === 'GET') {
       const raw = url.searchParams.get('domains') ?? '';
-      const domains = raw.split(',').map(d => normaliseDomain(d.trim())).filter(d => d.length > 3 && d.includes('.'));
+      const domains = raw.split(',').map(d => normaliseDomain(d.trim())).filter(d => d.length >= 3 && d.includes('.'));
       if (domains.length < 2) return jsonError('Provide at least 2 comma-separated domains', 400);
       const { limited } = await auditRateLimit(env, ip);
       if (limited) return rateLimitedResponse(60);
@@ -193,6 +303,78 @@ export default {
     }
   },
 };
+
+async function handleLlmTest(env: Env): Promise<Response> {
+  const TEST_MESSAGES = [
+    { role: 'user' as const, content: 'Reply with exactly: {"ok":true}' },
+  ];
+  const result: Record<string, unknown> = { ts: Date.now() };
+
+  // Test CF AI
+  try {
+    const cfResult = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: TEST_MESSAGES,
+      max_tokens: 20,
+    } as Parameters<typeof env.AI.run>[1]);
+    const text = (cfResult as { response?: string }).response ?? '';
+    result.cf_ai = { ok: true, text: text.slice(0, 100) };
+  } catch (e) {
+    result.cf_ai = { ok: false, error: String(e).slice(0, 200) };
+  }
+
+  // Test Groq (independently — don't depend on CF AI result)
+  if (!env.GROQ_API_KEY) {
+    result.groq = { ok: false, error: 'GROQ_API_KEY secret not set' };
+  } else {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'llama-3.1-8b-instant',
+          messages: TEST_MESSAGES,
+          max_tokens: 20,
+          temperature: 0,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+        const text = data.choices?.[0]?.message?.content ?? '';
+        result.groq = { ok: true, text: text.slice(0, 100) };
+      } else {
+        const body = await res.text().catch(() => '');
+        result.groq = { ok: false, status: res.status, error: body.slice(0, 200) };
+      }
+    } catch (e) {
+      result.groq = { ok: false, error: String(e).slice(0, 200) };
+    }
+  }
+
+  // Test real geo-query generation prompt (bypasses KV cache — uses live AI call)
+  const GEO_MESSAGES = [
+    { role: 'system' as const, content: 'You are an SEO expert. Output ONLY a JSON array. No markdown, no explanation.' },
+    { role: 'user' as const, content: 'Generate exactly 3 search queries that an AI (ChatGPT, Perplexity, Google AI) would answer by citing THIS specific business.\n\nVertical: tech\nPage content: Example SaaS company that helps teams collaborate\n\nReturn ONLY a JSON array of exactly 3 strings, e.g. ["best team tool","how to collaborate online","top collaboration apps"]' },
+  ];
+  // Try CF AI directly (no KV cache involvement)
+  try {
+    const cfResult = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: GEO_MESSAGES,
+      max_tokens: 250,
+    } as Parameters<typeof env.AI.run>[1]);
+    const raw = (cfResult as { response?: string }).response ?? '';
+    const match = raw.match(/\[[\s\S]*?\]/);
+    result.geo_query_test = { ok: !!match, raw: raw.slice(0, 300), parsed: match ? match[0] : null };
+  } catch (e) {
+    result.geo_query_test = { ok: false, error: String(e).slice(0, 200) };
+  }
+
+  return new Response(JSON.stringify(result, null, 2), {
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+  });
+}
 
 async function handleHealth(env: Env): Promise<Response> {
   const checks: Record<string, string> = {};
@@ -285,11 +467,15 @@ async function handleCompare(domains: string[], env: Env): Promise<Response> {
         else if ((a.domain_age_years ?? 0) >= 2) authorityRaw += 12;
         if (a.wikipedia) authorityRaw += 30;
         if (a.wikidata_id) authorityRaw += 20;
-        if ((a.backlink_sample_count ?? 0) >= 200) authorityRaw += 15;
-        else if ((a.backlink_sample_count ?? 0) >= 30) authorityRaw += 8;
+        if ((a.indexed_page_count ?? 0) >= 200) authorityRaw += 15;
+        else if ((a.indexed_page_count ?? 0) >= 30) authorityRaw += 8;
       }
-      const citationScore = Math.round(((geo as any)?.citation_rate ?? 0) * 100);
-      const rawGeo = Math.round(Math.min(100, authorityRaw) * 0.7 + citationScore * 0.3);
+      const geoData = geo as { citation_rate?: number; is_reliable?: boolean } | null;
+      const citationAvail = geoData?.is_reliable !== false && geoData?.citation_rate !== undefined;
+      const citationScore = citationAvail ? Math.round((geoData!.citation_rate ?? 0) * 100) : null;
+      const rawGeo = citationScore !== null
+        ? Math.round(Math.min(100, authorityRaw) * 0.7 + citationScore * 0.3)
+        : Math.min(100, authorityRaw);
       const rawOverall = Math.round(rawSeo * 0.55 + rawGeo * 0.45);
 
       const generous = (raw: number) => raw <= 0 ? 0 : raw >= 100 ? 100 : Math.round(Math.pow(raw / 100, 0.65) * 100);
@@ -313,7 +499,7 @@ async function handleCompare(domains: string[], env: Env): Promise<Response> {
 async function handleMonitor(req: Request, env: Env): Promise<Response> {
   try {
     const { domain, email } = await req.json() as { domain?: string; email?: string };
-    if (!domain || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!domain || domain.length < 3 || !domain.includes('.') || !email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return jsonError('Invalid domain or email', 400);
     }
 

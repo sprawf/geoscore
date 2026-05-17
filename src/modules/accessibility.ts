@@ -50,6 +50,10 @@ export async function runAccessibility(domain: string, html: string): Promise<Ac
   const issues: string[] = [];
   const checks: WcagCheck[] = [];
 
+  // All findings are surfaced via wcag_checks[] which renders as a ✓/✗ checklist in the UI.
+  // issues[] is intentionally NOT populated for individual check failures to avoid showing
+  // the same information twice (once in the checklist, once as a bullet list below it).
+
   // 1.1.1 Images must have alt text
   const imgTags = [...html.matchAll(/<img[^>]+>/gi)];
   const imgsMissingAlt = imgTags.filter(m => !/alt=["'][^"']*["']/i.test(m[0])).length;
@@ -59,13 +63,15 @@ export async function runAccessibility(domain: string, html: string): Promise<Ac
     detail: imgsMissingAlt > 0 ? `${imgsMissingAlt} image(s) missing alt` : undefined,
     level: 'A',
   });
-  if (imgsMissingAlt > 0) issues.push(`${imgsMissingAlt} image(s) missing alt text — screen readers cannot interpret them (WCAG 1.1.1)`);
 
   // 1.3.1 Form inputs have labels
   const textInputs = [...html.matchAll(/<input[^>]+type=["'](?:text|email|tel|password|search|url|number)[^"']*["'][^>]*>/gi)];
   const inputsNoLabel = textInputs.filter(m => {
-    const id = m[0].match(/\bid=["']([^"']+)["']/i)?.[1];
-    if (!id) return true;
+    const inputTag = m[0];
+    // Accept ARIA labels: aria-label or aria-labelledby on the input itself
+    if (/aria-label(?:ledby)?=/i.test(inputTag)) return false;
+    const id = inputTag.match(/\bid=["']([^"']+)["']/i)?.[1];
+    if (!id) return true;  // no id and no ARIA label → unlabelled
     return !new RegExp(`for=["']${id}["']`, 'i').test(html);
   }).length;
   checks.push({
@@ -74,24 +80,20 @@ export async function runAccessibility(domain: string, html: string): Promise<Ac
     detail: inputsNoLabel > 0 ? `${inputsNoLabel} input(s) missing label` : undefined,
     level: 'A',
   });
-  if (inputsNoLabel > 0) issues.push(`${inputsNoLabel} form input(s) missing associated <label> (WCAG 1.3.1)`);
 
   // 2.4.1 Skip navigation link
   const hasSkipLink =
     /<a[^>]+href=["']#(?:main|content|maincontent|skip|primary)[^"']*["'][^>]*>/i.test(html) ||
     /<a[^>]+class=["'][^"']*skip[^"']*["'][^>]*>/i.test(html);
   checks.push({ rule: 'Skip navigation link (WCAG 2.4.1)', passed: hasSkipLink, level: 'A' });
-  if (!hasSkipLink) issues.push('No skip-to-main-content link — keyboard users must tab through every nav link on every page (WCAG 2.4.1)');
 
   // 2.4.2 Page has a title
   const hasTitle = /<title[^>]*>[^<]+<\/title>/i.test(html);
   checks.push({ rule: 'Page has a <title> (WCAG 2.4.2)', passed: hasTitle, level: 'A' });
-  if (!hasTitle) issues.push('No <title> element — screen readers announce page purpose from the title (WCAG 2.4.2)');
 
   // 3.1.1 Language of page
   const hasLang = /<html[^>]+lang=["'][a-z]{2}/i.test(html);
   checks.push({ rule: 'HTML lang attribute (WCAG 3.1.1)', passed: hasLang, level: 'A' });
-  if (!hasLang) issues.push('Missing lang attribute on <html> — screen readers cannot pick the correct pronunciation (WCAG 3.1.1)');
 
   // ARIA landmarks
   const hasMain = /<main[\s>]|role=["']main["']/i.test(html);
@@ -102,7 +104,6 @@ export async function runAccessibility(domain: string, html: string): Promise<Ac
     detail: !hasMain ? 'Missing <main>' : (!hasNav ? 'Missing <nav>' : undefined),
     level: 'AA',
   });
-  if (!hasMain) issues.push('No <main> landmark — screen reader users cannot jump directly to page content');
 
   // 2.4.4 Links with generic text
   const genericLinkPattern = /<a\b[^>]*>\s*(?:click here|read more|here|learn more|more|link|this)\s*<\/a>/gi;
@@ -113,21 +114,24 @@ export async function runAccessibility(domain: string, html: string): Promise<Ac
     detail: genericLinks > 0 ? `${genericLinks} generic link(s)` : undefined,
     level: 'AA',
   });
-  if (genericLinks > 0) issues.push(`${genericLinks} generic link text(s) ("click here", "read more") — not descriptive for screen readers (WCAG 2.4.4)`);
 
   // Heading hierarchy — no skipped levels
   const hLevels = [...html.matchAll(/<h([1-6])[\s>]/gi)].map(m => Number(m[1]));
   let skippedHeading = false;
+  let skippedDetail: string | undefined;
   for (let i = 1; i < hLevels.length; i++) {
-    if (hLevels[i] - hLevels[i - 1] > 1) { skippedHeading = true; break; }
+    if (hLevels[i] - hLevels[i - 1] > 1) {
+      skippedHeading = true;
+      skippedDetail = `H${hLevels[i - 1]} → H${hLevels[i]} (skips H${hLevels[i - 1] + 1})`;
+      break;
+    }
   }
   checks.push({
     rule: 'Heading hierarchy (no skipped levels)',
     passed: !skippedHeading,
-    detail: skippedHeading ? 'e.g. H1 → H3 without H2' : undefined,
+    detail: skippedDetail,
     level: 'AA',
   });
-  if (skippedHeading) issues.push('Heading levels skipped (e.g. H1 → H3) — disrupts screen reader document outline');
 
   // Color scheme / dark mode
   const colorSchemeVal = html.match(/color-scheme:\s*([^;'"]+)/i)?.[1]?.trim() ?? null;

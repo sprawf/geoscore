@@ -6,6 +6,7 @@ export interface OffPageSeoResult {
   email_security: EmailSecurity;
   brand_presence: BrandPresence;
   backlink_sources: string[];
+  wayback_first_year: number | null;
   issues: string[];
 }
 
@@ -19,6 +20,8 @@ export interface EmailSecurity {
   has_mx: boolean;
   has_spf: boolean;
   has_dmarc: boolean;
+  has_dkim: boolean;
+  dkim_selector: string | null;
   dmarc_policy: string | null;
   spf_record: string | null;
 }
@@ -76,14 +79,37 @@ export async function runOffPageSeo(domain: string, html: string): Promise<OffPa
     }
   }
 
-  if (social_profiles.length === 0) issues.push('No social media profiles found on homepage — social signals matter for GEO and brand authority');
-  else if (social_profiles.length < 3) issues.push(`Only ${social_profiles.length} social profile${social_profiles.length > 1 ? 's' : ''} linked — expand social presence for stronger brand signals`);
+  // Detect bare root-domain social links (e.g. href="https://facebook.com/" with no profile path).
+  // These are social icons that are not wired up to a real profile — a common CMS placeholder mistake.
+  const BARE_SOCIAL_ROOTS = [
+    /https?:\/\/(www\.)?(facebook|fb)\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?(twitter|x)\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?youtube\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?instagram\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?linkedin\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?tiktok\.com\/?["'>\s]/i,
+    /https?:\/\/(www\.)?pinterest\.com\/?["'>\s]/i,
+  ];
+  const hasBareSocialLinks = social_profiles.length === 0 && BARE_SOCIAL_ROOTS.some(rx => rx.test(html));
+
+  if (social_profiles.length === 0) {
+    if (hasBareSocialLinks) {
+      issues.push('Social icons link to platform homepages, not actual profiles — update each link to point to your own profile URL (e.g. facebook.com/yourbrand)');
+    } else {
+      issues.push('No social media profiles found on homepage — social signals matter for GEO and brand authority');
+    }
+  } else if (social_profiles.length < 3) {
+    issues.push(`Only ${social_profiles.length} social profile${social_profiles.length > 1 ? 's' : ''} linked — expand social presence for stronger brand signals`);
+  }
 
   // ── Email security via Cloudflare DNS-over-HTTPS ──────────────────────────
-  const [mxData, txtData, dmarcData] = await Promise.all([
+  // Also check common DKIM selectors — DKIM proves the domain can sign outbound mail
+  const commonDkimSelectors = ['default', 'google', 'mail', 'k1', 'selector1', 'selector2', 'dkim'];
+  const [mxData, txtData, dmarcData, ...dkimResults] = await Promise.all([
     dnsJson(domain, 'MX'),
     dnsJson(domain, 'TXT'),
     dnsJson(`_dmarc.${domain}`, 'TXT'),
+    ...commonDkimSelectors.map(sel => dnsJson(`${sel}._domainkey.${domain}`, 'TXT')),
   ]);
 
   const has_mx = (mxData.Answer?.length ?? 0) > 0;
@@ -95,10 +121,22 @@ export async function runOffPageSeo(domain: string, html: string): Promise<OffPa
   const dmarcPolicyMatch = dmarcRecord?.match(/p=(none|quarantine|reject)/i);
   const dmarc_policy = dmarcPolicyMatch ? dmarcPolicyMatch[1].toLowerCase() : null;
 
-  if (!has_mx) issues.push('No MX records — domain cannot receive email');
-  if (!has_spf) issues.push('No SPF record — email spoofing protection missing');
-  if (!has_dmarc) issues.push('No DMARC record — emails can be forged in your domain name');
-  else if (dmarc_policy === 'none') issues.push('DMARC policy is "none" (monitor only) — upgrade to "quarantine" or "reject" for real protection');
+  // DKIM: check if any common selector returned a TXT record containing 'v=DKIM1'
+  const has_dkim = dkimResults.some(r =>
+    (r.Answer ?? []).some(a => a.data.includes('v=DKIM1') || a.data.includes('k=rsa') || a.data.includes('k=ed25519'))
+  );
+  const dkim_selector = has_dkim
+    ? commonDkimSelectors[dkimResults.findIndex(r => (r.Answer ?? []).some(a => a.data.includes('v=DKIM1') || a.data.includes('k=rsa') || a.data.includes('k=ed25519')))]
+    : null;
+
+  // MX, SPF, and DMARC presence are reported by site_intel and domain_intel — no duplicates here.
+  // Only flag DMARC policy weakness when present, as this is not checked by domain_intel.
+  if (has_dmarc && dmarc_policy === 'none') issues.push('DMARC policy is "none" (monitor only) — upgrade to "quarantine" or "reject" for real protection');
+  if (has_mx && has_spf && !has_dkim) issues.push('No DKIM record found — without DKIM, email from this domain may land in spam');
+
+  // wayback_first_year is populated by the authority module (shared CDX endpoint).
+  // The frontend reads it from the authority module cache to avoid duplicate API calls.
+  const wayback_first_year: number | null = null;
 
   const brand_presence: BrandPresence = { ddg_abstract: null, ddg_entity: null, has_knowledge_panel: false };
   const backlink_sources: string[] = [];
@@ -123,5 +161,8 @@ export async function runOffPageSeo(domain: string, html: string): Promise<OffPa
   else if (issueCount === 1) score += 20;
   else if (issueCount === 2) score += 10;
 
-  return { score: Math.min(100, score), social_profiles, email_security: { has_mx, has_spf, has_dmarc, dmarc_policy, spf_record: spfRecord }, brand_presence, backlink_sources, issues };
+  // DKIM adds up to 5 pts (email security max stays balanced)
+  if (has_dkim) score += 5;
+
+  return { score: Math.min(100, score), social_profiles, email_security: { has_mx, has_spf, has_dmarc, has_dkim, dkim_selector, dmarc_policy, spf_record: spfRecord }, brand_presence, backlink_sources, wayback_first_year, issues };
 }

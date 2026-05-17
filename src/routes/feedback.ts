@@ -1,4 +1,5 @@
 import type { Env } from '../lib/types';
+import { cacheKey } from '../lib/cache';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -65,7 +66,7 @@ export async function handleFeedback(req: Request, env: Env): Promise<Response> 
       }
 
       // 4. Clear the audit cache so next visit gets fresh results with the override applied
-      await env.AUDIT_KV.delete(`recent:${domain}`);
+      await env.AUDIT_KV.delete(cacheKey(domain));
     }
 
     // 5. Update accuracy_metrics

@@ -30,7 +30,9 @@ export interface AiContentInsightsResult {
   ai_visibility_score: number;
 }
 
-const SYSTEM_PROMPT = `You are an expert SEO and content analyst. Analyze the provided webpage content and return a structured JSON object with no extra text. Be concise but specific. Return valid JSON only.`;
+const SYSTEM_PROMPT = `You are an expert SEO and content analyst. Analyze the provided webpage content and return a structured JSON object with no extra text. Be concise but specific. Return valid JSON only.
+
+CRITICAL: For the freshness section, report ONLY signals directly observable in the page content (dates in blog posts, copyright year in footer, "last updated" notices, timestamps in testimonials). NEVER infer or guess domain registration dates, founding years, or any date not explicitly written on the page.`;
 
 function buildAnalysisPrompt(domain: string, pageText: string): string {
   return `Analyze this webpage for "${domain}" and return JSON with this exact structure:
@@ -54,8 +56,8 @@ function buildAnalysisPrompt(domain: string, pageText: string): string {
   },
   "freshness": {
     "score": 60,
-    "signals": ["signal 1", "signal 2"],
-    "summary": "1 sentence about content freshness"
+    "signals": ["ONLY list signals you can directly observe on the page — e.g. blog post dates, copyright year, 'last updated' notices, dated testimonials. NEVER guess or infer domain registration dates."],
+    "summary": "1 sentence about content freshness based only on observable page signals"
   },
   "opportunities": {
     "summary": "1-2 sentences on biggest opportunities",

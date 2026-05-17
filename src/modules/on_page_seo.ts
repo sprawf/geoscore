@@ -59,11 +59,10 @@ export async function runOnPageSeo(domain: string, html: string): Promise<OnPage
   const h2count = (html.match(/<h2[^>]*>/gi) ?? []).length;
   const h3count = (html.match(/<h3[^>]*>/gi) ?? []).length;
   const h4plus  = (html.match(/<h[456][^>]*>/gi) ?? []).length;
-  const h1texts = h1raw.map(m => m[1].replace(/<[^>]+>/g, '').trim().slice(0, 80)).filter(Boolean);
+  const h1texts = h1raw.map(m => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)).filter(Boolean);
   const skipped_level = h1count > 0 && h2count === 0 && h3count > 0;
 
-  if (h1count === 0)  issues.push('No H1 tag — critical for keyword targeting');
-  if (h1count > 1)   issues.push(`${h1count} H1 tags found — should be exactly one`);
+  // H1 count is reported by technical_seo (check + issue) — only flag structural problems here.
   if (h2count === 0) issues.push('No H2 subheadings — page has no content structure');
   if (skipped_level) issues.push('Heading hierarchy skips H2 (H1→H3) — breaks document outline');
 
@@ -85,13 +84,15 @@ export async function runOnPageSeo(domain: string, html: string): Promise<OnPage
   const totalImgs = imgTags.length;
   let missingAlt = 0, missingDims = 0, lazyLoaded = 0, modernFmt = 0, responsive = 0;
   for (const tag of imgTags) {
-    if (!/alt=/i.test(tag) || /alt=["']\s*["']/i.test(tag)) missingAlt++;
+    // Only flag images with NO alt attribute at all.
+    // alt="" is the correct WCAG treatment for decorative images — do not count as missing.
+    if (!/alt=/i.test(tag)) missingAlt++;
     if (!/width=/i.test(tag) || !/height=/i.test(tag)) missingDims++;
     if (/loading=["']lazy["']/i.test(tag)) lazyLoaded++;
     if (/\.(webp|avif)/i.test(tag) || /type=["']image\/(webp|avif)/i.test(tag)) modernFmt++;
     if (/srcset=/i.test(tag)) responsive++;
   }
-  if (missingAlt > 0) issues.push(`${missingAlt} image${missingAlt > 1 ? 's' : ''} missing alt text — accessibility & SEO penalty`);
+  // Alt text issues are reported by accessibility (WCAG 1.1.1) and technical_seo — no duplicate here.
   if (totalImgs > 5 && missingDims > totalImgs * 0.4) issues.push(`${missingDims} images missing width/height attributes — causes Cumulative Layout Shift`);
   if (totalImgs > 4 && lazyLoaded < Math.floor(totalImgs * 0.5)) issues.push('Most images not lazy-loaded — hurts page load speed below the fold');
   if (totalImgs > 0 && modernFmt === 0) issues.push('No WebP/AVIF images detected — modern formats save 25-35% bandwidth');
@@ -105,27 +106,29 @@ export async function runOnPageSeo(domain: string, html: string): Promise<OnPage
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ').trim();
   const wordCount = stripped.split(/\s+/).filter(w => w.length > 2).length;
-  const readingTime = Math.max(1, Math.ceil(wordCount / 200));
+  const readingTime = Math.max(1, Math.round(wordCount / 238));
   const paragraphs = (html.match(/<p[^>]*>/gi) ?? []).length;
   const hasFaq    = /faq|frequently.asked|q&a|question.*answer/i.test(html);
   const hasTable  = /<table[^>]*>/i.test(html);
   const hasVideo  = /<video[^>]*>|youtube\.com\/embed|vimeo\.com\/video|loom\.com\/embed/i.test(html);
 
-  if (wordCount < 300) issues.push(`${wordCount} words — thin content (target 600+) is skipped by AI citation engines`);
-  else if (wordCount < 600) issues.push(`${wordCount} words — moderate content depth; 600+ words ranks significantly better`);
-  if (!hasFaq) issues.push('No FAQ section detected — FAQ schema dramatically boosts AI answer inclusion');
+  // Word count / thin content is reported by content_quality — no duplicate here.
+  // FAQ schema gap is reported by schema_audit — no duplicate here.
 
   const page_speed: PageSpeedResult | null = null;
 
   // ── Score ─────────────────────────────────────────────────────────────────
+  // Checks mirror the issues flagged above so the score and issues are consistent
   const checks = [
-    h1count === 1,
-    h2count >= 2,
-    !skipped_level,
-    missingAlt === 0,
-    wordCount >= 300,
-    internal >= 3,
-    totalImgs === 0 || missingDims < totalImgs * 0.5,
+    h1count === 1,                                         // single H1
+    h2count >= 2,                                          // content structure
+    !skipped_level,                                        // heading order
+    missingAlt === 0,                                      // image accessibility
+    wordCount >= 600,                                      // full content depth
+    internal >= 3,                                         // internal linking
+    hasFaq,                                                // FAQ / Q&A section
+    totalImgs === 0 || modernFmt > 0,                      // modern image formats
+    totalImgs === 0 || missingDims < totalImgs * 0.5,      // image dimensions
   ];
   const score = Math.round(checks.filter(Boolean).length / checks.length * 100);
 

@@ -1,0 +1,32 @@
+name = "audit-api"
+main = "src/index.ts"
+compatibility_date = "2025-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "audit-db"
+database_id = "40e24c90-028c-4c9c-b202-88cb6d892a45"
+
+[[kv_namespaces]]
+binding = "AUDIT_KV"
+id = "ea17e4192b59401587bdc22889b9d975"
+
+[[kv_namespaces]]
+binding = "BUDGET_KV"
+id = "be511b47bdaf4ea8b476b14ce2146893"
+
+[[vectorize]]
+binding = "VECTORS"
+index_name = "audit-vectors"
+
+[ai]
+binding = "AI"
+
+[triggers]
+crons = ["0 2 * * *", "0 8 * * 1"]
+
+[vars]
+NOMINATIM_USER_AGENT = "GeoAuditTool/1.0 (contact@example.com)"
+SEARXNG_URL = ""
+DAILY_BROWSER_BUDGET_SECONDS = "540"

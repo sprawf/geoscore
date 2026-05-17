@@ -11,6 +11,26 @@ export interface DomainIntelResult {
   dkim_selectors_found: string[];
   email_security_score: number;
   issues: string[];
+  caa: {
+    present: boolean;
+    issue: string[];
+    issuewild: string[];
+    iodef: string[];
+  } | null;
+}
+
+async function dnsJson(name: string, type: string): Promise<Array<{ data: string }>> {
+  try {
+    const res = await fetchWithTimeout(
+      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`,
+      { timeoutMs: 5000, headers: { Accept: 'application/dns-json' } }
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as { Answer?: Array<{ data: string }> };
+    return data.Answer ?? [];
+  } catch {
+    return [];
+  }
 }
 
 async function dohTxt(name: string): Promise<string[]> {
@@ -137,34 +157,66 @@ const DKIM_SELECTORS = ['google', 'selector1'];
 export async function runDomainIntel(domain: string): Promise<DomainIntelResult> {
   const issues: string[] = [];
 
-  const [rdap, spfTxts, dmarcTxts, ...dkimResults] = await Promise.all([
+  // Wrap each DNS lookup independently so a single failure doesn't null out all results.
+  // dohTxt returns [] on network error, which is indistinguishable from "no record" —
+  // track whether the lookup itself succeeded to avoid false "no SPF" warnings.
+  const [rdap, spfResult, dmarcResult, caaRecords, ...dkimResults] = await Promise.all([
     fetchRdapFull(domain),
-    dohTxt(domain),
-    dohTxt(`_dmarc.${domain}`),
+    dohTxt(domain).then(txts => ({ ok: true, txts })).catch(() => ({ ok: false, txts: [] as string[] })),
+    dohTxt(`_dmarc.${domain}`).then(txts => ({ ok: true, txts })).catch(() => ({ ok: false, txts: [] as string[] })),
+    dnsJson(domain, 'CAA').catch(() => [] as Array<{ data: string }>),
     ...DKIM_SELECTORS.map(sel =>
       dohTxt(`${sel}._domainkey.${domain}`).then(txts => ({
         sel,
         found: txts.some(t => t.includes('v=DKIM1')),
-      }))
+        ok: true,
+      })).catch(() => ({ sel, found: false, ok: false }))
     ),
   ]);
+  const spfTxts = (spfResult as { ok: boolean; txts: string[] }).txts;
+  const spfLookupOk = (spfResult as { ok: boolean }).ok;
+  const dmarcTxts = (dmarcResult as { ok: boolean; txts: string[] }).txts;
+  const dmarcLookupOk = (dmarcResult as { ok: boolean }).ok;
 
   const spfRecord = spfTxts.find(t => t.startsWith('v=spf1')) ?? null;
   const dmarcRecord = dmarcTxts.find(t => t.startsWith('v=DMARC1')) ?? null;
-  const dkimSelectorsFound = (dkimResults as Array<{ sel: string; found: boolean }>)
+  const dkimSelectorsFound = (dkimResults as Array<{ sel: string; found: boolean; ok: boolean }>)
     .filter(c => c.found).map(c => c.sel);
+
+  // ── CAA record parsing ────────────────────────────────────────────────────
+  // Each CAA record data field format: "0 issue \"ca.example.com\""
+  const caaIssue: string[] = [];
+  const caaIssuewild: string[] = [];
+  const caaIodef: string[] = [];
+  for (const rec of (caaRecords as Array<{ data: string }>)) {
+    // e.g. data = '0 issue "letsencrypt.org"' or '0 issuewild ";"'
+    const m = rec.data.match(/^\d+\s+(issue|issuewild|iodef)\s+"?([^"]*)"?/i);
+    if (!m) continue;
+    const tag = m[1].toLowerCase();
+    const value = m[2].trim();
+    if (tag === 'issue') caaIssue.push(value);
+    else if (tag === 'issuewild') caaIssuewild.push(value);
+    else if (tag === 'iodef') caaIodef.push(value);
+  }
+  const caaPresent = caaIssue.length > 0 || caaIssuewild.length > 0 || caaIodef.length > 0;
+  const caa: DomainIntelResult['caa'] = caaPresent
+    ? { present: true, issue: caaIssue, issuewild: caaIssuewild, iodef: caaIodef }
+    : null;
 
   let emailScore = 0;
   if (spfRecord) emailScore += 34;
   if (dmarcRecord) emailScore += 33;
   if (dkimSelectorsFound.length > 0) emailScore += 33;
 
-  if (!spfRecord) issues.push('No SPF record — domain may be used for spoofing');
-  if (!dmarcRecord) issues.push('No DMARC record — email spoofing protection absent');
-  if (dkimSelectorsFound.length === 0) issues.push('No DKIM found on common selectors');
+  // SPF/DMARC/DKIM missing findings are surfaced by the Email & Ads Security card and the
+  // Off-Page SEO email-infrastructure grid — emitting them here too creates duplicate bullets.
+  // Domain Intel issues are reserved for registrar/expiry/DNSSEC concerns only.
+  const dkimLookupOk = (dkimResults as Array<{ ok: boolean }>).some(c => c.ok);
+  if (dkimLookupOk && dkimSelectorsFound.length === 0) issues.push('No DKIM found on common selectors (checked Google Workspace & Microsoft 365 selectors — other providers may use different selectors)');
   if (rdap.days_until_expiry !== null && rdap.days_until_expiry < 60)
     issues.push(`Domain expires in ${rdap.days_until_expiry} days — renew soon`);
   if (!rdap.dnssec) issues.push('DNSSEC not enabled');
+  if (!caaPresent) issues.push('No CAA records — any Certificate Authority can issue certificates for this domain');
 
   return {
     ...rdap,
@@ -173,5 +225,6 @@ export async function runDomainIntel(domain: string): Promise<DomainIntelResult>
     dkim_selectors_found: dkimSelectorsFound,
     email_security_score: emailScore,
     issues,
+    caa,
   };
 }

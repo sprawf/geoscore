@@ -15,6 +15,8 @@ export interface ContentQualityResult {
   score: number;
   issues: string[];
   readability: ReadabilityScore;
+  is_saas_product: boolean;
+  has_pricing_language: boolean;
 }
 
 export interface ReadabilityScore {
@@ -64,13 +66,13 @@ function computeReadability(text: string, wordCount: number): ReadabilityScore {
   };
 }
 
-export async function runContentQuality(domain: string, html: string): Promise<ContentQualityResult> {
+export async function runContentQuality(domain: string, html: string, innerPagesHtml: string[] = []): Promise<ContentQualityResult> {
   const issues: string[] = [];
   const empty: ContentQualityResult = {
     word_count: 0, h2_count: 0, h3_count: 0, image_count: 0,
     images_with_alt: 0, alt_coverage_pct: 100, internal_links: 0,
     external_links: 0, has_phone: false, has_email: false, has_address: false,
-    lang_attr: null, has_noindex: false, score: 0,
+    lang_attr: null, has_noindex: false, score: 0, is_saas_product: false, has_pricing_language: false,
     issues: ['No page content available for content analysis'],
     readability: { flesch_ease: 0, grade_level: 0, grade_label: 'N/A', avg_words_per_sentence: 0, reading_time_min: 0 },
   };
@@ -78,21 +80,24 @@ export async function runContentQuality(domain: string, html: string): Promise<C
   if (!html) return empty;
 
   // Strip noisy blocks before analysis
+  // nav + footer are stripped so word count matches on_page_seo (which also strips them),
+  // preventing two modules reporting different counts for the same page.
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '');
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '');
 
-  // Lang attribute
+  // Lang attribute (reported by technical_seo check — no duplicate here)
   const langMatch = html.match(/<html[^>]+lang=["']([^"']+)["']/i);
   const lang_attr = langMatch?.[1] ?? null;
-  if (!lang_attr) issues.push('Missing lang attribute on <html> — accessibility and localisation signal');
 
   // noindex detection — computed after word count so we can suppress false positives
   const has_noindex = /<meta[^>]+name=["']robots["'][^>]*content=["'][^"']*noindex/i.test(html);
 
   // Word count
   const text = stripped.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  const words = text.split(' ').filter(w => w.length > 2);
+  const words = text.split(/\s+/).filter(w => w.length > 2);
   const word_count = words.length;
   // Detect JavaScript SPA: extremely low word count means content is client-rendered
   const likely_spa = word_count < 50;
@@ -105,7 +110,7 @@ export async function runContentQuality(domain: string, html: string): Promise<C
       issues.push(`JavaScript SPA detected: only ${word_count} words visible to crawlers — ensure critical content is server-rendered for indexability`);
     }
   } else {
-    if (has_noindex) issues.push('CRITICAL: noindex meta tag found — page is excluded from all search engines');
+    // noindex on a full page is reported by technical_seo (which owns meta-robots) — no duplicate here.
   }
   if (!likely_spa) {
     if (word_count < 300) {
@@ -115,19 +120,20 @@ export async function runContentQuality(domain: string, html: string): Promise<C
     }
   }
 
-  // Headings
+  // Headings (H2 structure is reported by on_page_seo — no duplicate here)
   const h2_count = (stripped.match(/<h2[^>]*>/gi) ?? []).length;
   const h3_count = (stripped.match(/<h3[^>]*>/gi) ?? []).length;
-  if (h2_count === 0) issues.push('No H2 headings — poor content structure hurts both SEO and GEO readability');
 
   // Images and alt text
   const imgs = stripped.match(/<img[^>]+>/gi) ?? [];
   const image_count = imgs.length;
-  const images_with_alt = imgs.filter(img => /alt=["'][^"']{2,}["']/i.test(img)).length;
+  // Count images that have an explicit alt attribute (including alt="" for decorative images).
+  // alt="" is the correct WCAG treatment for decorative images — count as covered, not missing.
+  // Only images with NO alt attribute at all are considered uncovered.
+  const images_with_alt = imgs.filter(img => /alt=/i.test(img)).length;
   const alt_coverage_pct = image_count > 0 ? Math.round((images_with_alt / image_count) * 100) : 100;
-  if (image_count > 0 && alt_coverage_pct < 80) {
-    issues.push(`${image_count - images_with_alt} image(s) missing alt text — accessibility and indexability gap`);
-  }
+  // Alt text issues are reported by accessibility (WCAG 1.1.1) — no duplicate here.
+  // alt_coverage_pct is still returned as a metric for scoring and recommendations.
 
   // Links
   const anchors = stripped.match(/<a[^>]+href=["']([^"'#]+)["'][^>]*>/gi) ?? [];
@@ -141,35 +147,88 @@ export async function runContentQuality(domain: string, html: string): Promise<C
   }
 
   // Contact signals — international patterns
-  const has_phone = /(?:\+\d{1,3}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{4}/.test(text);
-  const has_email = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(text);
-  const has_address = /(street|road|avenue|boulevard|lane|drive|court|building|floor|suite|office|p\.o\.?\s*box|\d+\s+\w+\s+(?:st|rd|ave|blvd|ln|dr)\.?)/i.test(text);
+  let has_phone = /(?:^|[\s\(])\+?\d[\d\s\-.\(\)]{6,}\d(?=$|[\s\)])/.test(text);
+  let has_email = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(text);
+  let has_address = /(street|road|avenue|boulevard|lane|drive|court|building|floor|suite|office|p\.o\.?\s*box|\d+\s+\w+\s+(?:st|rd|ave|blvd|ln|dr)\.?)/i.test(text);
 
-  // Contact issues — phone is important for local businesses but optional for global/tech platforms
+  // Enrich contact signals from inner pages (/contact, /about, etc.) when not found on homepage
+  if (innerPagesHtml.length > 0 && (!has_phone || !has_email || !has_address)) {
+    const innerText = innerPagesHtml
+      .map(h => h.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' '))
+      .join(' ');
+    if (!has_phone) has_phone = /(?:^|[\s\(])\+?\d[\d\s\-.\(\)]{6,}\d(?=$|[\s\)])/.test(innerText);
+    if (!has_email) has_email = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/.test(innerText);
+    if (!has_address) has_address = /(street|road|avenue|boulevard|lane|drive|court|building|floor|suite|office|p\.o\.?\s*box|\d+\s+\w+\s+(?:st|rd|ave|blvd|ln|dr)\.?)/i.test(innerText);
+  }
+
+  // Detect whether this is a local business or a global org/SaaS from JSON-LD in the HTML
+  const schemaTypes = (html.match(/"@type"\s*:\s*"([^"]+)"/gi) ?? [])
+    .map(m => (m.match(/"([^"]+)"$/) ?? [])[1] ?? '');
+  const isOrgSite = schemaTypes.some(t =>
+    ['Organization', 'Corporation', 'SoftwareApplication', 'WebSite', 'WebApplication'].includes(t)
+  );
+  const isLocalBiz = schemaTypes.some(t =>
+    t === 'LocalBusiness' || t.endsWith('Store') || t.endsWith('Restaurant') ||
+    t.endsWith('Salon') || t.endsWith('Gym') || t.endsWith('Hotel') ||
+    // Medical, legal, home services and other brick-and-mortar LocalBusiness subtypes
+    ['Dentist', 'Physician', 'Hospital', 'MedicalClinic', 'Optician', 'Pharmacy',
+     'LegalService', 'Attorney', 'Accountant', 'FinancialService', 'RealEstateAgent',
+     'HomeAndConstructionBusiness', 'Plumber', 'HVACBusiness', 'Electrician',
+     'GeneralContractor', 'Locksmith', 'MovingCompany', 'AutoDealer', 'AutoRepair',
+     'GasStation', 'HealthClub', 'SportsClub', 'LodgingBusiness', 'Hotel',
+     'FoodEstablishment', 'Bakery', 'CafeOrCoffeeShop', 'Veterinary',
+     'EntertainmentBusiness', 'ProfessionalService', 'ChildCare'].includes(t)
+  );
+  // Detect SaaS/digital product from nav links and pricing language even without JSON-LD schema
+  const hasSaasNav = /href=["'][^"']*\/(signup|sign-up|register|login|log-in|pricing|dashboard|app)\b/i.test(html);
+  const hasPricingLanguage = /\$[\d,.]+\s*\/\s*(mo|month|yr|year)|per\s+month|free\s+trial|upgrade\s+to\s+pro/i.test(text);
+  const hasSaasOgImage = /lovable\.app|v0\.dev|bolt\.new|stackblitz\.io/i.test(html);
+  // High internal link count reliably identifies media, portal, and large e-commerce sites.
+  // Multi-location restaurant groups can reach ~70-80 links; true media sites like timeout.com
+  // hit 200+. Threshold of 150 safely separates them.
+  const isHighLinkSite = internal_links >= 150;
+  // isLocalBiz from explicit schema overrides all SaaS signals — a dental practice with
+  // nested Organization schema is still a local business, not SaaS
+  const isSaasProduct = !isLocalBiz && (isOrgSite || hasSaasNav || hasPricingLanguage || hasSaasOgImage || isHighLinkSite);
+  // Only local businesses genuinely need phone/address; org/media/SaaS sites legitimately omit them.
+  const requiresContactInfo = isLocalBiz;
+
+  // Contact issues
   if (!likely_spa) {
-    if (!has_phone && !has_email) issues.push('No contact information found on homepage — weakens trust signals');
-    else if (!has_phone) issues.push('No phone number — consider adding for local SEO and LLM citation');
-    if (!has_address) issues.push('No location/address text — weakens local SEO signals');
+    if (!has_phone && !has_email && requiresContactInfo) issues.push('No contact information found on homepage — weakens trust signals');
+    else if (!has_phone && requiresContactInfo) issues.push('No phone number — consider adding for local SEO and LLM citation');
+    if (!has_address && requiresContactInfo) issues.push('No location/address text — weakens local SEO signals');
   }
 
   const readability = computeReadability(text, word_count);
 
-  // Score 0-100 — phone reduced to 10pts (global/tech sites legitimately omit it)
+  // Score 0-100
+  // Phone and address only count toward the score for local businesses.
+  // Global org/SaaS sites are scored on content quality, not contact completeness.
   let score = 0;
   if (word_count >= 600) score += 30;
   else if (word_count >= 300) score += 18;
   if (h2_count >= 2) score += 15;
   if (alt_coverage_pct >= 80) score += 20;
   else if (alt_coverage_pct >= 50) score += 10;
-  if (has_phone) score += 10;
-  if (has_email) score += 10;
-  if (has_address) score += 10;
-  if (lang_attr) score += 5;
+  if (requiresContactInfo) {
+    if (has_phone) score += 10;
+    if (has_address) score += 10;
+    if (has_email) score += 5;
+    if (lang_attr) score += 5;
+  } else {
+    // For orgs/SaaS: email still a mild trust signal; redistribute the phone/address points to lang
+    if (has_email) score += 10;
+    if (lang_attr) score += 15;
+    score += 10; // baseline — not penalised for legitimately omitting phone/address
+  }
 
   return {
     word_count, h2_count, h3_count, image_count, images_with_alt,
     alt_coverage_pct, internal_links, external_links,
     has_phone, has_email, has_address, lang_attr, has_noindex,
     score, issues, readability,
+    is_saas_product: isSaasProduct,
+    has_pricing_language: hasPricingLanguage,
   };
 }
