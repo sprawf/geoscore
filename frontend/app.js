@@ -4867,12 +4867,6 @@ function renderComputedSections(data) {
           <div class="text-slate-400 mb-0.5">Email provider</div>
           <div class="font-medium text-slate-800">${esc(mxProvider)}</div>
         </div>
-        <div class="bg-slate-50 rounded-lg p-2.5 col-span-2">
-          <div class="text-slate-400 mb-0.5">TXT records</div>
-          <div class="font-medium text-slate-800">${dns.txt_count != null
-            ? `${dns.txt_count} record${dns.txt_count !== 1 ? 's' : ''}${dns.txt_count > 5 ? ' — complex DNS zone' : ''}`
-            : '—'}</div>
-        </div>
       </div>
     `);
   }
