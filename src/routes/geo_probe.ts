@@ -7,6 +7,9 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
+// Geographic/person entity exclusion — same pattern as authority.ts to ensure consistency
+const GEO_PERSON_PATTERN = /\b(village|town|city|municipality|commune|settlement|district|province|region|county|river|mountain|lake|island|peninsula|cape|bay|born|politician|footballer|athlete|actor|singer|musician|painter|philosopher|novelist|poet)\b/i;
+
 // DuckDuckGo Instant Answer API — free, no auth, no quota.
 // Its knowledge panel data is sourced from Wikipedia/Wikidata, which are
 // the primary training corpora for every major LLM (ChatGPT, Gemini, Claude,
@@ -97,6 +100,39 @@ export async function handleGeoProbe(req: Request, env: Env): Promise<Response> 
       }
     }
   } catch { /* DDG unavailable — treat as no knowledge panel */ }
+
+  // ── Wikipedia direct check (fallback / consistency with authority module) ─
+  // DDG doesn't always surface a panel even when a Wikipedia article exists.
+  // Check directly so the result is consistent with what the main audit shows.
+  // Uses same geo/person exclusion as authority.ts to avoid false positives.
+  if (!has_knowledge_panel) {
+    try {
+      const brand = businessName.replace(/^www\./, '').split(/[\s.]/)[0].toLowerCase();
+      const norm  = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const normBrand = norm(brand);
+      const wikiUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(brand)}&limit=5&format=json`;
+      const wikiRes = await fetchWithTimeout(wikiUrl, { timeoutMs: 6000 });
+      if (wikiRes.ok) {
+        const wikiData = await wikiRes.json() as [string, string[], string[], string[]];
+        const titles: string[] = wikiData[1] ?? [];
+        const descs:  string[] = wikiData[2] ?? [];
+        const match = titles.findIndex((t, i) => {
+          const nt = norm(t);
+          const titleMatch = nt === normBrand || nt.startsWith(normBrand + ' ') || nt.startsWith(normBrand + '-');
+          if (!titleMatch) return false;
+          return !GEO_PERSON_PATTERN.test(descs[i] ?? '');
+        });
+        if (match !== -1) {
+          has_knowledge_panel = true;
+          knowledge_source    = 'Wikipedia';
+          knowledge_summary   = descs[match] || null;
+          signals.push(`Wikipedia article found for this brand ("${titles[match]}")`);
+          // Partial score — Wikipedia article exists but no rich DDG panel yet
+          visibility_score   += 30;
+        }
+      }
+    } catch { /* Wikipedia API unavailable */ }
+  }
 
   // ── Score ─────────────────────────────────────────────────────────────────
   let visibility_score = 0;

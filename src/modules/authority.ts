@@ -82,6 +82,9 @@ function brandFromDomain(domain: string): string {
   return domain.replace(/^www\./, '').split('.')[0].toLowerCase();
 }
 
+// Geo/person entity types that indicate a false-positive brand match (place names, people)
+const GEO_PERSON_PATTERN = /\b(village|town|city|municipality|commune|settlement|district|province|region|county|river|mountain|lake|island|peninsula|cape|bay|born|politician|footballer|athlete|actor|singer|musician|painter|philosopher|novelist|poet)\b/i;
+
 async function fetchWikipedia(name: string): Promise<boolean> {
   // name may be the full domain (e.g. "hubspot.com"); derive the brand slug
   const brand = brandFromDomain(name);
@@ -95,12 +98,19 @@ async function fetchWikipedia(name: string): Promise<boolean> {
   try {
     const res = await fetchWithTimeout(url, { timeoutMs: 6000 });
     if (!res.ok) return false;
+    // OpenSearch returns [query, titles[], descriptions[], urls[]]
     const data = await res.json() as [string, string[], string[], string[]];
     const titles: string[] = data[1] ?? [];
-    return titles.some(t => {
+    const descs:  string[] = data[2] ?? [];
+    return titles.some((t, i) => {
       const nt = norm(t);
       // Accept exact match or "Brand Something" prefix — reject "XyzBrand" or "something brand"
-      return nt === normBrand || nt.startsWith(normBrand + ' ') || nt.startsWith(normBrand + '-');
+      const titleMatch = nt === normBrand || nt.startsWith(normBrand + ' ') || nt.startsWith(normBrand + '-');
+      if (!titleMatch) return false;
+      // Exclude geographic / biographical entities — these are false positives for brand detection.
+      // e.g. "Kirki" (village in Greece) shares a name with the kirki.com WordPress plugin.
+      const desc = descs[i] ?? '';
+      return !GEO_PERSON_PATTERN.test(desc);
     });
   } catch { return false; }
 }
@@ -126,14 +136,19 @@ async function fetchWikidata(name: string): Promise<string | null> {
       return labelMatches && /company|corporation|software|platform|service|organization|business|startup|tech|restaurant|retail|chain|brand|media|entertainment|nonprofit|charity|foundation/i.test(e.description ?? '');
     });
     if (companyMatch) return companyMatch.id;
-    // Priority 2: first result matched via label or alias (covers abbreviation redirects
-    // like "nytimes" → Q9684 "The New York Times" matched via alias "nytimes")
-    const aliasOrLabelMatch = data.search.find(e =>
-      e.match?.type === 'label' || e.match?.type === 'alias'
-    );
+    // Priority 2: label/alias match — but exclude geographic/person entities to avoid false
+    // positives where a place or person shares the brand name (e.g. "Kirki" village in Greece
+    // matching kirki.com). Only accept if the description is not a geo/person entity.
+    const aliasOrLabelMatch = data.search.find(e => {
+      if (e.match?.type !== 'label' && e.match?.type !== 'alias') return false;
+      return !GEO_PERSON_PATTERN.test(e.description ?? '');
+    });
     if (aliasOrLabelMatch) return aliasOrLabelMatch.id;
-    // Priority 3: any result whose normalized label starts with the brand slug
-    return data.search.find(e => norm(e.label ?? '').startsWith(normBrand))?.id ?? null;
+    // Priority 3: label starts-with match — same geo/person exclusion applies
+    return data.search.find(e => {
+      if (!norm(e.label ?? '').startsWith(normBrand)) return false;
+      return !GEO_PERSON_PATTERN.test(e.description ?? '');
+    })?.id ?? null;
   } catch { return null; }
 }
 
